@@ -11782,7 +11782,6 @@ static int insertTestProcess() {
         }
     }
 end:
-    postFreeResource();
     if (g_fpOfInsertResult){
         fclose(g_fpOfInsertResult);
     }
@@ -13034,6 +13033,7 @@ int main(int argc, char *argv[]) {
         if (g_dupstr)
             free(g_dupstr);
     }
+    postFreeResource();
 
     return code;
 }
