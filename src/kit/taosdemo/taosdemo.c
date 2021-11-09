@@ -635,7 +635,7 @@ static int taosRandom()
 
 static void prompt();
 static int createDatabasesAndStables();
-static void createChildTables();
+static int createChildTables();
 static int queryDbExec(TAOS *taos, char *command, QUERY_TYPE type, bool quiet);
 static int postProceSql(char *host, uint16_t port, char* sqlstr, threadInfo *pThreadInfo);
 static int64_t getTSRandTail(int64_t timeStampStep, int32_t seq,
@@ -4681,11 +4681,9 @@ static int startMultiThreadCreateChildTable(
         char* db_name, SSuperTable* stbInfo) {
 
     pthread_t *pids = calloc(1, threads * sizeof(pthread_t));
+    assert(pids);
     threadInfo *infos = calloc(1, threads * sizeof(threadInfo));
-
-    if ((NULL == pids) || (NULL == infos)) {
-        ERROR_EXIT("createChildTable malloc failed\n");
-    }
+    assert(infos);
 
     if (threads < 1) {
         threads = 1;
@@ -4748,66 +4746,99 @@ static int startMultiThreadCreateChildTable(
     return 0;
 }
 
-static void createChildTables() {
+static int createChildTables() {
+    int32_t code = 0;
     char tblColsBuf[TSDB_MAX_BYTES_PER_ROW];
     int len;
+    double start;
+    double end;
 
-    for (int i = 0; i < g_Dbs.dbCount; i++) {
-        if (g_Dbs.use_metric) {
-            if (g_Dbs.db[i].superTblCount > 0) {
-                // with super table
-                for (int j = 0; j < g_Dbs.db[i].superTblCount; j++) {
-                    if ((AUTO_CREATE_SUBTBL
-                                == g_Dbs.db[i].superTbls[j].autoCreateTable)
-                            || (TBL_ALREADY_EXISTS
-                                == g_Dbs.db[i].superTbls[j].childTblExists)) {
-                        continue;
-                    }
-                    verbosePrint("%s() LN%d: %s\n", __func__, __LINE__,
-                            g_Dbs.db[i].superTbls[j].colsOfCreateChildTable);
-                    uint64_t startFrom = 0;
+    fprintf(stderr, "creating %"PRId64" table(s) with %d thread(s)\n\n",
+                g_totalChildTables, g_Dbs.threadCountForCreateTbl);
+    if (g_fpOfInsertResult) {
+        fprintf(g_fpOfInsertResult,
+            "creating %"PRId64" table(s) with %d thread(s)\n\n",
+            g_totalChildTables, g_Dbs.threadCountForCreateTbl);
+    }
 
-                    verbosePrint("%s() LN%d: create %"PRId64" child tables from %"PRIu64"\n",
-                            __func__, __LINE__, g_totalChildTables, startFrom);
+    start = taosGetTimestampMs();
 
-                    startMultiThreadCreateChildTable(
-                            g_Dbs.db[i].superTbls[j].colsOfCreateChildTable,
-                            g_Dbs.threadCountForCreateTbl,
-                            startFrom,
-                            g_Dbs.db[i].superTbls[j].childTblCount,
-                            g_Dbs.db[i].dbName, &(g_Dbs.db[i].superTbls[j]));
+    if (g_Dbs.use_metric) {
+        for (int i = 0; i < g_Dbs.dbCount; i++) {
+            assert(g_Dbs.db[i].superTblCount > 0);
+            // with super table
+            for (int j = 0; j < g_Dbs.db[i].superTblCount; j++) {
+                if ((AUTO_CREATE_SUBTBL
+                            == g_Dbs.db[i].superTbls[j].autoCreateTable)
+                        || (TBL_ALREADY_EXISTS
+                            == g_Dbs.db[i].superTbls[j].childTblExists)) {
+                    continue;
+                }
+                verbosePrint("%s() LN%d: %s\n", __func__, __LINE__,
+                        g_Dbs.db[i].superTbls[j].colsOfCreateChildTable);
+                uint64_t startFrom = 0;
+
+                verbosePrint("%s() LN%d: create %"PRId64" child tables from %"PRIu64"\n",
+                        __func__, __LINE__, g_totalChildTables, startFrom);
+
+                code = startMultiThreadCreateChildTable(
+                        g_Dbs.db[i].superTbls[j].colsOfCreateChildTable,
+                        g_Dbs.threadCountForCreateTbl,
+                        startFrom,
+                        g_Dbs.db[i].superTbls[j].childTblCount,
+                        g_Dbs.db[i].dbName, &(g_Dbs.db[i].superTbls[j]));
+                if (code) {
+                    errorPrint2("%s() LN%d, startMultiThreadCreateChildTable failed for stable %d\n",
+                        __func__, __LINE__, j);
+                    return code;
                 }
             }
-        } else {
-            // normal table
-            len = snprintf(tblColsBuf, TSDB_MAX_BYTES_PER_ROW, "(TS TIMESTAMP");
-            for (int j = 0; j < g_args.columnCount; j++) {
-                if ((strncasecmp(g_args.dataType[j], "BINARY", strlen("BINARY")) == 0)
-                        || (strncasecmp(g_args.dataType[j],
-                                "NCHAR", strlen("NCHAR")) == 0)) {
-                    snprintf(tblColsBuf + len, TSDB_MAX_BYTES_PER_ROW - len,
-                            ",C%d %s(%d)", j, g_args.dataType[j], g_args.binwidth);
-                } else {
-                    snprintf(tblColsBuf + len, TSDB_MAX_BYTES_PER_ROW - len,
-                            ",C%d %s", j, g_args.dataType[j]);
-                }
-                len = strlen(tblColsBuf);
+        }
+    } else {
+        len = snprintf(tblColsBuf, TSDB_MAX_BYTES_PER_ROW, "(TS TIMESTAMP");
+        for (int j = 0; j < g_args.columnCount; j++) {
+            if ((strncasecmp(g_args.dataType[j], "BINARY", strlen("BINARY")) == 0)
+                    || (strncasecmp(g_args.dataType[j],
+                            "NCHAR", strlen("NCHAR")) == 0)) {
+                snprintf(tblColsBuf + len, TSDB_MAX_BYTES_PER_ROW - len,
+                        ",C%d %s(%d)", j, g_args.dataType[j], g_args.binwidth);
+            } else {
+                snprintf(tblColsBuf + len, TSDB_MAX_BYTES_PER_ROW - len,
+                        ",C%d %s", j, g_args.dataType[j]);
             }
+            len = strlen(tblColsBuf);
+        }
+        snprintf(tblColsBuf + len, TSDB_MAX_BYTES_PER_ROW - len, ")");
 
-            snprintf(tblColsBuf + len, TSDB_MAX_BYTES_PER_ROW - len, ")");
-
-            verbosePrint("%s() LN%d: dbName: %s num of tb: %"PRId64" schema: %s\n",
-                    __func__, __LINE__,
-                    g_Dbs.db[i].dbName, g_args.ntables, tblColsBuf);
-            startMultiThreadCreateChildTable(
-                    tblColsBuf,
-                    g_Dbs.threadCountForCreateTbl,
-                    0,
-                    g_args.ntables,
-                    g_Dbs.db[i].dbName,
-                    NULL);
+        verbosePrint("%s() LN%d: dbName: %s num of tb: %"PRId64" schema: %s\n",
+                __func__, __LINE__,
+                g_Dbs.db[0].dbName, g_args.ntables, tblColsBuf);
+        code = startMultiThreadCreateChildTable(
+                tblColsBuf,
+                g_Dbs.threadCountForCreateTbl,
+                0,
+                g_args.ntables,
+                g_Dbs.db[0].dbName,
+                NULL);
+        if (code) {
+            errorPrint2("%s() LN%d, startMultiThreadCreateChildTable failed for only-normal table\n",
+                        __func__, __LINE__);
         }
     }
+
+    end = taosGetTimestampMs();
+
+    fprintf(stderr,
+                    "\nSpent %.4f seconds to create %"PRId64" table(s) with %d thread(s), actual %"PRId64" table(s) created\n\n",
+                    (end - start)/1000.0, g_totalChildTables,
+                    g_Dbs.threadCountForCreateTbl, g_actualChildTables);
+    if (g_fpOfInsertResult) {
+        fprintf(g_fpOfInsertResult,
+            "\nSpent %.4f seconds to create %"PRId64" table(s) with %d thread(s), actual %"PRId64" table(s) created\n\n",
+            (end - start)/1000.0, g_totalChildTables,
+            g_Dbs.threadCountForCreateTbl, g_actualChildTables);
+    }
+    return code;
 }
 
 /*
@@ -11672,7 +11703,7 @@ static void prompt()
 }
 
 static int insertTestProcess() {
-    int32_t code;
+    int32_t code = 0;
     setupForAnsiEscape();
     code = printfInsertMeta();
     resetAfterAnsiEscape();
@@ -11712,37 +11743,13 @@ static int insertTestProcess() {
         goto end;
     }
 
-    double start;
-    double end;
-
-    if (g_args.iface != SML_IFACE) {
-        if (g_totalChildTables > 0) {
-            fprintf(stderr,
-                    "creating %"PRId64" table(s) with %d thread(s)\n\n",
-                    g_totalChildTables, g_Dbs.threadCountForCreateTbl);
-            if (g_fpOfInsertResult) {
-                fprintf(g_fpOfInsertResult,
-                    "creating %"PRId64" table(s) with %d thread(s)\n\n",
-                    g_totalChildTables, g_Dbs.threadCountForCreateTbl);
-            }
-
-            // create child tables
-            start = taosGetTimestampMs();
-            createChildTables();
-            end = taosGetTimestampMs();
-
-            fprintf(stderr,
-                    "\nSpent %.4f seconds to create %"PRId64" table(s) with %d thread(s), actual %"PRId64" table(s) created\n\n",
-                    (end - start)/1000.0, g_totalChildTables,
-                    g_Dbs.threadCountForCreateTbl, g_actualChildTables);
-            if (g_fpOfInsertResult) {
-                fprintf(g_fpOfInsertResult,
-                    "\nSpent %.4f seconds to create %"PRId64" table(s) with %d thread(s), actual %"PRId64" table(s) created\n\n",
-                    (end - start)/1000.0, g_totalChildTables,
-                    g_Dbs.threadCountForCreateTbl, g_actualChildTables);
-            }
-        }
+    // create child tables
+    code = createChildTables();
+    if (code) {
+        errorPrint2("%s() LN%d, createChildTables() failed\n", __func__, __LINE__);
+        goto end;
     }
+
     // create sub threads for inserting data
     //start = taosGetTimestampMs();
     for (int i = 0; i < g_Dbs.dbCount; i++) {
