@@ -368,6 +368,12 @@ typedef struct SSuperTable_S {
     uint64_t     totalAffectedRows;
 } SSuperTable;
 
+
+typedef struct SSNormalTable_S {
+    char*           tbName;
+    uint64_t        tbSeq;
+    SSuperTable*    stbInfo;
+} SNormalTable;
 typedef struct {
     char     name[TSDB_DB_NAME_LEN];
     char     create_time[32];
