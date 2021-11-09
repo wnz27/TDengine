@@ -341,9 +341,9 @@ typedef struct SSuperTable_S {
     char         tagsFile[MAX_FILE_NAME_LEN];
 
     uint32_t     columnCount;
-    StrColumn    columns[TSDB_MAX_COLUMNS];
+    StrColumn*   columns;
     uint32_t     tagCount;
-    StrColumn    tags[TSDB_MAX_TAGS];
+    StrColumn*   tags;
 
     char*        childTblName;
     bool         escapeChar;
@@ -640,7 +640,7 @@ static int queryDbExec(TAOS *taos, char *command, QUERY_TYPE type, bool quiet);
 static int postProceSql(char *host, uint16_t port, char* sqlstr, threadInfo *pThreadInfo);
 static int64_t getTSRandTail(int64_t timeStampStep, int32_t seq,
         int disorderRatio, int disorderRange);
-static bool getInfoFromJsonFile(char* file);
+static int getInfoFromJsonFile(char* file);
 static void init_rand_data();
 static int regexMatch(const char *s, const char *reg, int cflags);
 
@@ -957,7 +957,7 @@ static void errorPrintReqArg3(char *program, char *wrong_arg)
             "Try `taosdemo --help' or `taosdemo --usage' for more information.\n");
 }
 
-static void parse_args(int argc, char *argv[], SArguments *arguments) {
+static int parse_args(int argc, char *argv[], SArguments *arguments) {
 
     for (int i = 1; i < argc; i++) {
         if ((0 == strncmp(argv[i], "-f", strlen("-f")))
@@ -967,7 +967,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (2 == strlen(argv[i])) {
                 if (i+1 == argc) {
                     errorPrintReqArg(argv[0], "f");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->metaFile = argv[++i];
             } else if (0 == strncmp(argv[i], "-f", strlen("-f"))) {
@@ -975,21 +975,21 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--file") == strlen(argv[i])) {
                 if (i+1 == argc) {
                     errorPrintReqArg3(argv[0], "--file");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->metaFile = argv[++i];
             } else if (0 == strncmp(argv[i], "--file=", strlen("--file="))) {
                 arguments->metaFile = (char *)(argv[i] + strlen("--file="));
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-c", strlen("-c")))
                 || (0 == strncmp(argv[i], "--config-dir", strlen("--config-dir")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "c");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 tstrncpy(configDir, argv[++i], TSDB_FILENAME_LEN);
             } else if (0 == strncmp(argv[i], "-c", strlen("-c"))) {
@@ -997,21 +997,21 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--config-dir") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--config-dir");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 tstrncpy(configDir, argv[++i], TSDB_FILENAME_LEN);
             } else if (0 == strncmp(argv[i], "--config-dir=", strlen("--config-dir="))) {
                 tstrncpy(configDir, (char *)(argv[i] + strlen("--config-dir=")), TSDB_FILENAME_LEN);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-h", strlen("-h")))
                 || (0 == strncmp(argv[i], "--host", strlen("--host")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "h");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->host = argv[++i];
             } else if (0 == strncmp(argv[i], "-h", strlen("-h"))) {
@@ -1019,14 +1019,14 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--host") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--host");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->host = argv[++i];
             } else if (0 == strncmp(argv[i], "--host=", strlen("--host="))) {
                 arguments->host = (char *)(argv[i] + strlen("--host="));
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if (strcmp(argv[i], "-PP") == 0) {
             arguments->performance_print = true;
@@ -1038,46 +1038,46 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "P");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (isStringNumber(argv[i+1])) {
                     tstrncpy(strPort, argv[++i], BIGINT_BUFF_LEN);
                 } else {
                     errorPrintReqArg2(argv[0], "P");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "--port=", strlen("--port="))) {
                 if (isStringNumber((char *)(argv[i] + strlen("--port=")))) {
                     tstrncpy(strPort, (char *)(argv[i]+strlen("--port=")), BIGINT_BUFF_LEN);
                 } else {
                     errorPrintReqArg2(argv[0], "--port");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-P", strlen("-P"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-P")))) {
                     tstrncpy(strPort, (char *)(argv[i]+strlen("-P")), BIGINT_BUFF_LEN);
                 } else {
                     errorPrintReqArg2(argv[0], "--port");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--port") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--port");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (isStringNumber(argv[i+1])) {
                     tstrncpy(strPort, argv[++i], BIGINT_BUFF_LEN);
                 } else {
                     errorPrintReqArg2(argv[0], "--port");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
 
             port = atoi(strPort);
             if (port > 65535) {
                 errorWrongValue("taosdump", "-P or --port", strPort);
-                exit(EXIT_FAILURE);
+                return -1;
             }
             arguments->port = (uint16_t)port;
 
@@ -1086,7 +1086,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "I");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 if (0 == strcasecmp(argv[i+1], "taosc")) {
                     arguments->iface = TAOSC_IFACE;
@@ -1098,7 +1098,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->iface = SML_IFACE;
                 } else {
                     errorWrongValue(argv[0], "-I", argv[i+1]);
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 i++;
             } else if (0 == strncmp(argv[i], "--interface=", strlen("--interface="))) {
@@ -1112,7 +1112,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->iface = SML_IFACE;
                 } else {
                     errorPrintReqArg3(argv[0], "--interface");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-I", strlen("-I"))) {
                 if (0 == strcasecmp((char *)(argv[i] + strlen("-I")), "taosc")) {
@@ -1126,12 +1126,12 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                 } else {
                     errorWrongValue(argv[0], "-I",
                             (char *)(argv[i] + strlen("-I")));
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--interface") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--interface");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 if (0 == strcasecmp(argv[i+1], "taosc")) {
                     arguments->iface = TAOSC_IFACE;
@@ -1143,19 +1143,19 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->iface = SML_IFACE;
                 } else {
                     errorWrongValue(argv[0], "--interface", argv[i+1]);
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 i++;
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-u", strlen("-u")))
                 || (0 == strncmp(argv[i], "--user", strlen("--user")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "u");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->user = argv[++i];
             } else if (0 == strncmp(argv[i], "-u", strlen("-u"))) {
@@ -1165,12 +1165,12 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--user") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--user");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->user = argv[++i];
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-p", strlen("-p")))
                 || (0 == strcmp(argv[i], "--password"))) {
@@ -1189,7 +1189,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--output");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->output_file = argv[++i];
             } else if (0 == strncmp(argv[i], "--output=", strlen("--output="))) {
@@ -1199,19 +1199,19 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--output") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--output");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->output_file = argv[++i];
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-s", strlen("-s")))
                 || (0 == strncmp(argv[i], "--sql-file", strlen("--sql-file")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "s");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->sqlFile = argv[++i];
             } else if (0 == strncmp(argv[i], "--sql-file=", strlen("--sql-file="))) {
@@ -1221,22 +1221,22 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--sql-file") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--sql-file");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->sqlFile = argv[++i];
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-q", strlen("-q")))
                 || (0 == strncmp(argv[i], "--query-mode", strlen("--query-mode")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "q");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "q");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->async_mode = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--query-mode=", strlen("--query-mode="))) {
@@ -1244,37 +1244,37 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->async_mode = atoi((char *)(argv[i]+strlen("--query-mode=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--query-mode");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-q", strlen("-q"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-q")))) {
                     arguments->async_mode = atoi((char *)(argv[i]+strlen("-q")));
                 } else {
                     errorPrintReqArg2(argv[0], "-q");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--query-mode") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--query-mode");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--query-mode");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->async_mode = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-T", strlen("-T")))
                 || (0 == strncmp(argv[i], "--threads", strlen("--threads")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "T");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "T");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->nthreads = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--threads=", strlen("--threads="))) {
@@ -1282,37 +1282,37 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->nthreads = atoi((char *)(argv[i]+strlen("--threads=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--threads");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-T", strlen("-T"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-T")))) {
                     arguments->nthreads = atoi((char *)(argv[i]+strlen("-T")));
                 } else {
                     errorPrintReqArg2(argv[0], "-T");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--threads") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--threads");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--threads");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->nthreads = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-i", strlen("-i")))
                 || (0 == strncmp(argv[i], "--insert-interval", strlen("--insert-interval")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "i");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "i");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->insert_interval = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--insert-interval=", strlen("--insert-interval="))) {
@@ -1320,37 +1320,37 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->insert_interval = atoi((char *)(argv[i]+strlen("--insert-interval=")));
                 } else {
                     errorPrintReqArg3(argv[0], "--insert-innterval");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-i", strlen("-i"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-i")))) {
                     arguments->insert_interval = atoi((char *)(argv[i]+strlen("-i")));
                 } else {
                     errorPrintReqArg3(argv[0], "-i");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--insert-interval")== strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--insert-interval");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--insert-interval");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->insert_interval = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-S", strlen("-S")))
                 || (0 == strncmp(argv[i], "--time-step", strlen("--time-step")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "S");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "S");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->async_mode = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--time-step=", strlen("--time-step="))) {
@@ -1358,34 +1358,34 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->async_mode = atoi((char *)(argv[i]+strlen("--time-step=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--time-step");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-S", strlen("-S"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-S")))) {
                     arguments->async_mode = atoi((char *)(argv[i]+strlen("-S")));
                 } else {
                     errorPrintReqArg2(argv[0], "-S");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--time-step") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--time-step");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--time-step");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->async_mode = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if (strcmp(argv[i], "-qt") == 0) {
             if ((argc == i+1)
                     || (!isStringNumber(argv[i+1]))) {
                 printHelp();
                 errorPrint("%s", "\n\t-qt need a number following!\n");
-                exit(EXIT_FAILURE);
+                return -1;
             }
             arguments->query_times = atoi(argv[++i]);
         } else if ((0 == strncmp(argv[i], "-B", strlen("-B")))
@@ -1393,10 +1393,10 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (strlen("-B") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "B");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "B");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->interlaceRows = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--interlace-rows=", strlen("--interlace-rows="))) {
@@ -1404,37 +1404,37 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->interlaceRows = atoi((char *)(argv[i]+strlen("--interlace-rows=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--interlace-rows");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-B", strlen("-B"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-B")))) {
                     arguments->interlaceRows = atoi((char *)(argv[i]+strlen("-B")));
                 } else {
                     errorPrintReqArg2(argv[0], "-B");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--interlace-rows")== strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--interlace-rows");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--interlace-rows");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->interlaceRows = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-r", strlen("-r")))
                 || (0 == strncmp(argv[i], "--rec-per-req", 13))) {
             if (strlen("-r") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "r");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "r");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->reqPerReq = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--rec-per-req=", strlen("--rec-per-req="))) {
@@ -1442,37 +1442,37 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->reqPerReq = atoi((char *)(argv[i]+strlen("--rec-per-req=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--rec-per-req");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-r", strlen("-r"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-r")))) {
                     arguments->reqPerReq = atoi((char *)(argv[i]+strlen("-r")));
                 } else {
                     errorPrintReqArg2(argv[0], "-r");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--rec-per-req")== strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--rec-per-req");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--rec-per-req");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->reqPerReq = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-t", strlen("-t")))
                 || (0 == strncmp(argv[i], "--tables", strlen("--tables")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "t");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "t");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->ntables = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--tables=", strlen("--tables="))) {
@@ -1480,27 +1480,27 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->ntables = atoi((char *)(argv[i]+strlen("--tables=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--tables");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-t", strlen("-t"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-t")))) {
                     arguments->ntables = atoi((char *)(argv[i]+strlen("-t")));
                 } else {
                     errorPrintReqArg2(argv[0], "-t");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--tables") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--tables");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--tables");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->ntables = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
 
             g_totalChildTables = arguments->ntables;
@@ -1509,10 +1509,10 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "n");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "n");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->insertRows = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--records=", strlen("--records="))) {
@@ -1520,34 +1520,34 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->insertRows = atoi((char *)(argv[i]+strlen("--records=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--records");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-n", strlen("-n"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-n")))) {
                     arguments->insertRows = atoi((char *)(argv[i]+strlen("-n")));
                 } else {
                     errorPrintReqArg2(argv[0], "-n");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--records") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--records");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--records");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->insertRows = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-d", strlen("-d")))
                 || (0 == strncmp(argv[i], "--database", strlen("--database")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "d");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->database = argv[++i];
             } else if (0 == strncmp(argv[i], "--database=", strlen("--database="))) {
@@ -1557,12 +1557,12 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--database") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--database");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->database = argv[++i];
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-l", strlen("-l")))
                 || (0 == strncmp(argv[i], "--columns", strlen("--columns")))) {
@@ -1570,10 +1570,10 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "l");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "l");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->columnCount = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--columns=", strlen("--columns="))) {
@@ -1581,27 +1581,27 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->columnCount = atoi((char *)(argv[i]+strlen("--columns=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--columns");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-l", strlen("-l"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-l")))) {
                     arguments->columnCount = atoi((char *)(argv[i]+strlen("-l")));
                 } else {
                     errorPrintReqArg2(argv[0], "-l");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--columns")== strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--columns");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--columns");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->columnCount = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
 
             if (arguments->columnCount > MAX_NUM_COLUMNS) {
@@ -1626,7 +1626,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "b");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 dataType = argv[++i];
             } else if (0 == strncmp(argv[i], "--data-type=", strlen("--data-type="))) {
@@ -1636,12 +1636,12 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--data-type") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--data-type");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 dataType = argv[++i];
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
 
             if (strstr(dataType, ",") == NULL) {
@@ -1663,7 +1663,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                         && strcasecmp(dataType, "UBIGINT")) {
                     printHelp();
                     errorPrint("%s", "-b: Invalid data_type!\n");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->dataType[0] = dataType;
                 if (0 == strcasecmp(dataType, "INT")) {
@@ -1726,7 +1726,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                         printHelp();
                         free(g_dupstr);
                         errorPrint("%s", "-b: Invalid data_type!\n");
-                        exit(EXIT_FAILURE);
+                        return -1;
                     }
 
                     if (0 == strcasecmp(token, "INT")) {
@@ -1775,10 +1775,10 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "w");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "w");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->binwidth = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--binwidth=", strlen("--binwidth="))) {
@@ -1786,34 +1786,34 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->binwidth = atoi((char *)(argv[i]+strlen("--binwidth=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--binwidth");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-w", strlen("-w"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-w")))) {
                     arguments->binwidth = atoi((char *)(argv[i]+strlen("-w")));
                 } else {
                     errorPrintReqArg2(argv[0], "-w");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--binwidth") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--binwidth");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--binwidth");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->binwidth = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-m", strlen("-m")))
                 || (0 == strncmp(argv[i], "--table-prefix", strlen("--table-prefix")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "m");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->tb_prefix = argv[++i];
             } else if (0 == strncmp(argv[i], "--table-prefix=", strlen("--table-prefix="))) {
@@ -1823,12 +1823,12 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--table-prefix") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--table-prefix");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->tb_prefix = argv[++i];
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-E", strlen("-E")))
                 || (0 == strncmp(argv[i], "--escape-character", strlen("--escape-character")))) {
@@ -1857,10 +1857,10 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (strlen("-R") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "R");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "R");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->disorderRange = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--disorder-range=",
@@ -1870,7 +1870,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                         atoi((char *)(argv[i]+strlen("--disorder-range=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--disorder-range");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-R", strlen("-R"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-R")))) {
@@ -1878,7 +1878,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                         atoi((char *)(argv[i]+strlen("-R")));
                 } else {
                     errorPrintReqArg2(argv[0], "-R");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
 
                 if (arguments->disorderRange < 0) {
@@ -1889,25 +1889,25 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             } else if (strlen("--disorder-range") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--disorder-range");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--disorder-range");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->disorderRange = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((0 == strncmp(argv[i], "-O", strlen("-O")))
                 || (0 == strncmp(argv[i], "--disorder", strlen("--disorder")))) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "O");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "O");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->disorderRatio = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--disorder=", strlen("--disorder="))) {
@@ -1915,27 +1915,27 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                     arguments->disorderRatio = atoi((char *)(argv[i]+strlen("--disorder=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--disorder");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-O", strlen("-O"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-O")))) {
                     arguments->disorderRatio = atoi((char *)(argv[i]+strlen("-O")));
                 } else {
                     errorPrintReqArg2(argv[0], "-O");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--disorder") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--disorder");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--disorder");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->disorderRatio = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
 
             if (arguments->disorderRatio > 50) {
@@ -1949,10 +1949,10 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             if (2 == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg(argv[0], "a");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "a");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->replica = atoi(argv[++i]);
             } else if (0 == strncmp(argv[i], "--replica=",
@@ -1962,7 +1962,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                         atoi((char *)(argv[i]+strlen("--replica=")));
                 } else {
                     errorPrintReqArg2(argv[0], "--replica");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (0 == strncmp(argv[i], "-a", strlen("-a"))) {
                 if (isStringNumber((char *)(argv[i] + strlen("-a")))) {
@@ -1970,20 +1970,20 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                         atoi((char *)(argv[i]+strlen("-a")));
                 } else {
                     errorPrintReqArg2(argv[0], "-a");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
             } else if (strlen("--replica") == strlen(argv[i])) {
                 if (argc == i+1) {
                     errorPrintReqArg3(argv[0], "--replica");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 } else if (!isStringNumber(argv[i+1])) {
                     errorPrintReqArg2(argv[0], "--replica");
-                    exit(EXIT_FAILURE);
+                    return -1;
                 }
                 arguments->replica = atoi(argv[++i]);
             } else {
                 errorUnrecognized(argv[0], argv[i]);
-                exit(EXIT_FAILURE);
+                return -1;
             }
 
             if (arguments->replica > 3 || arguments->replica < 1) {
@@ -1995,7 +1995,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
             arguments->method_of_delete = atoi(argv[++i]);
             if (arguments->method_of_delete > 3) {
                 errorPrint("%s", "\n\t-D need a value (0~3) number following!\n");
-                exit(EXIT_FAILURE);
+                return -1;
             }
         } else if ((strcmp(argv[i], "--version") == 0)
                 || (strcmp(argv[i], "-V") == 0)) {
@@ -2031,7 +2031,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
                         (char *)((char *)argv[i])+1);
             }
             fprintf(stderr, "Try `taosdemo --help' or `taosdemo --usage' for more information.\n");
-            exit(EXIT_FAILURE);
+            return -1;
         }
     }
 
@@ -2096,7 +2096,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
 
             default:
                 errorPrint2("get error data type : %s\n", g_args.dataType[c]);
-                exit(EXIT_FAILURE);
+                return -1;
         }
     }
 
@@ -2146,6 +2146,7 @@ static void parse_args(int argc, char *argv[], SArguments *arguments) {
 
         prompt();
     }
+    return 0;
 }
 
 static void tmfclose(FILE *fp) {
@@ -4413,7 +4414,9 @@ static int createSuperTable(
     return 0;
 }
 
-int createDatabasesAndStables(char *command) {
+static int createDatabasesAndStables() {
+    char* command = calloc(1, BUFFER_SIZE);
+    assert(command);
     TAOS * taos = NULL;
     int    ret = 0;
     taos = taos_connect(g_Dbs.host, g_Dbs.user, g_Dbs.password, NULL, g_Dbs.port);
@@ -4952,42 +4955,63 @@ static int generateSampleFromCsvForStb(
     return 0;
 }
 
-static bool getColumnAndTagTypeFromInsertJsonFile(
-        cJSON* stbInfo, SSuperTable* superTbls) {
-    bool  ret = false;
+static int getColumnAndTagTypeFromInsertJsonFile(cJSON* stbInfo, SSuperTable* superTbls) {
+    int32_t code = 0;
 
     // columns
     cJSON *columns = cJSON_GetObjectItem(stbInfo, "columns");
-    if (columns && columns->type != cJSON_Array) {
+    if (!columns || columns->type != cJSON_Array) {
+        code = -1;
         errorPrint("%s", "failed to read json, columns not found\n");
         goto PARSE_OVER;
-    } else if (NULL == columns) {
-        superTbls->columnCount = 0;
-        superTbls->tagCount    = 0;
-        return true;
     }
 
     int columnSize = cJSON_GetArraySize(columns);
-    if ((columnSize + 1/* ts */) > TSDB_MAX_COLUMNS) {
-        errorPrint("failed to read json, column size overflow, max column size is %d\n",
-                TSDB_MAX_COLUMNS);
-        goto PARSE_OVER;
-    }
 
     int count = 1;
     int index = 0;
-    StrColumn    columnCase;
-
-    //superTbls->columnCount = columnSize;
+    int totalCol = 0;
     for (int k = 0; k < columnSize; ++k) {
         cJSON* column = cJSON_GetArrayItem(columns, k);
-        if (column == NULL) continue;
+        if (column == NULL){
+            continue;
+        }
+        cJSON* countObj = cJSON_GetObjectItem(column, "count");
+        if (countObj && countObj->type == cJSON_Number) {
+            totalCol += countObj->valueint;
+        } else if (countObj && countObj->type != cJSON_Number) {
+            code = -1;
+            errorPrint("%s", "failed to read json, column count not found\n");
+            goto PARSE_OVER;
+        } else {
+            totalCol += 1;
+        }
+    }
 
+    if (totalCol > MAX_NUM_COLUMNS) {
+        code = -1;
+        errorPrint("failed to read json, column size overflow, allowed max column size is %d\n",
+                TSDB_MAX_COLUMNS);
+        goto PARSE_OVER;
+    }
+    
+    superTbls->columnCount = totalCol;
+    superTbls->columns = calloc(totalCol, sizeof(StrColumn));
+    assert(superTbls->columns);
+
+    for (int k = 0; k < columnSize; ++k) {
+        StrColumn* columnCase = calloc(1, sizeof(StrColumn));
+        assert(columnCase);
+        cJSON* column = cJSON_GetArrayItem(columns, k);
+        if (column == NULL){
+            continue;
+        }
         count = 1;
         cJSON* countObj = cJSON_GetObjectItem(column, "count");
         if (countObj && countObj->type == cJSON_Number) {
             count = countObj->valueint;
         } else if (countObj && countObj->type != cJSON_Number) {
+            code = -1;
             errorPrint("%s", "failed to read json, column count not found\n");
             goto PARSE_OVER;
         } else {
@@ -4995,224 +5019,227 @@ static bool getColumnAndTagTypeFromInsertJsonFile(
         }
 
         // column info
-        memset(&columnCase, 0, sizeof(StrColumn));
         cJSON *dataType = cJSON_GetObjectItem(column, "type");
         if (!dataType || dataType->type != cJSON_String
                 || dataType->valuestring == NULL) {
+            code = -1;
             errorPrint("%s", "failed to read json, column type not found\n");
             goto PARSE_OVER;
         }
-        //tstrncpy(superTbls->columns[k].dataType, dataType->valuestring, DATATYPE_BUFF_LEN);
-        tstrncpy(columnCase.dataType, dataType->valuestring,
+        tstrncpy(columnCase->dataType, dataType->valuestring,
                 min(DATATYPE_BUFF_LEN, strlen(dataType->valuestring) + 1));
 
         cJSON* dataLen = cJSON_GetObjectItem(column, "len");
         if (dataLen && dataLen->type == cJSON_Number) {
-            columnCase.dataLen = dataLen->valueint;
+            columnCase->dataLen = dataLen->valueint;
         } else if (dataLen && dataLen->type != cJSON_Number) {
+            code = -1;
             debugPrint("%s() LN%d: failed to read json, column len not found\n",
                     __func__, __LINE__);
             goto PARSE_OVER;
         } else {
-            columnCase.dataLen = SMALL_BUFF_LEN;
+            columnCase->dataLen = SMALL_BUFF_LEN;
         }
 
         for (int n = 0; n < count; ++n) {
             tstrncpy(superTbls->columns[index].dataType,
-                    columnCase.dataType,
-                    min(DATATYPE_BUFF_LEN, strlen(columnCase.dataType) + 1));
-
-            superTbls->columns[index].dataLen = columnCase.dataLen;
+                    columnCase->dataType,
+                    min(DATATYPE_BUFF_LEN, strlen(columnCase->dataType) + 1));
+            superTbls->columns[index].dataLen = columnCase->dataLen;
+            if (0 == strncasecmp(superTbls->columns[index].dataType,
+                    "INT", strlen("INT"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_INT;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "TINYINT", strlen("TINYINT"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_TINYINT;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "SMALLINT", strlen("SMALLINT"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_SMALLINT;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "BIGINT", strlen("BIGINT"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_BIGINT;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "FLOAT", strlen("FLOAT"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_FLOAT;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "DOUBLE", strlen("DOUBLE"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_DOUBLE;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "BINARY", strlen("BINARY"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_BINARY;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "NCHAR", strlen("NCHAR"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_NCHAR;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "BOOL", strlen("BOOL"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_BOOL;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "TIMESTAMP", strlen("TIMESTAMP"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_TIMESTAMP;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "UTINYINT", strlen("UTINYINT"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_UTINYINT;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "USMALLINT", strlen("USMALLINT"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_USMALLINT;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "UINT", strlen("UINT"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_UINT;
+            } else if (0 == strncasecmp(superTbls->columns[index].dataType,
+                        "UBIGINT", strlen("UBIGINT"))) {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_UBIGINT;
+            } else {
+                superTbls->columns[index].data_type = TSDB_DATA_TYPE_NULL;
+            }
             index++;
         }
+        tmfree(columnCase);
     }
-
-    if ((index + 1 /* ts */) > MAX_NUM_COLUMNS) {
-        errorPrint("failed to read json, column size overflow, allowed max column size is %d\n",
-                MAX_NUM_COLUMNS);
-        goto PARSE_OVER;
-    }
-
-    superTbls->columnCount = index;
-
-    for (int c = 0; c < superTbls->columnCount; c++) {
-        if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "INT", strlen("INT"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_INT;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "TINYINT", strlen("TINYINT"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_TINYINT;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "SMALLINT", strlen("SMALLINT"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_SMALLINT;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "BIGINT", strlen("BIGINT"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_BIGINT;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "FLOAT", strlen("FLOAT"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_FLOAT;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "DOUBLE", strlen("DOUBLE"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_DOUBLE;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "BINARY", strlen("BINARY"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_BINARY;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "NCHAR", strlen("NCHAR"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_NCHAR;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "BOOL", strlen("BOOL"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_BOOL;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "TIMESTAMP", strlen("TIMESTAMP"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_TIMESTAMP;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "UTINYINT", strlen("UTINYINT"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_UTINYINT;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "USMALLINT", strlen("USMALLINT"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_USMALLINT;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "UINT", strlen("UINT"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_UINT;
-        } else if (0 == strncasecmp(superTbls->columns[c].dataType,
-                    "UBIGINT", strlen("UBIGINT"))) {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_UBIGINT;
-        } else {
-            superTbls->columns[c].data_type = TSDB_DATA_TYPE_NULL;
-        }
-    }
+    assert(index == totalCol);
 
     count = 1;
     index = 0;
+    int totalTag = 0;
     // tags
     cJSON *tags = cJSON_GetObjectItem(stbInfo, "tags");
     if (!tags || tags->type != cJSON_Array) {
+        code = -1;
         errorPrint("%s", "failed to read json, tags not found\n");
         goto PARSE_OVER;
     }
 
     int tagSize = cJSON_GetArraySize(tags);
-    if (tagSize > TSDB_MAX_TAGS) {
-        errorPrint("failed to read json, tags size overflow, max tag size is %d\n",
+
+    for (int k = 0; k < tagSize; ++k) {
+        cJSON* tag = cJSON_GetArrayItem(tags, k);
+        if (tag == NULL){
+            continue;
+        }
+        cJSON* countObj = cJSON_GetObjectItem(tag, "count");
+        if (countObj && countObj->type == cJSON_Number) {
+            totalTag += countObj->valueint;
+        } else if (countObj && countObj->type != cJSON_Number) {
+            code = -1;
+            errorPrint("%s", "failed to read json, column count not found\n");
+            goto PARSE_OVER;
+        } else {
+            totalTag += 1;
+        }
+    }
+
+    if (totalTag > TSDB_MAX_TAGS) {
+        code = -1;
+        errorPrint("failed to read json, tags size overflow, allowed max tag count is %d\n",
                 TSDB_MAX_TAGS);
         goto PARSE_OVER;
     }
 
-    //superTbls->tagCount = tagSize;
-    for (int k = 0; k < tagSize; ++k) {
-        cJSON* tag = cJSON_GetArrayItem(tags, k);
-        if (tag == NULL) continue;
+    superTbls->tagCount = totalTag;
+    superTbls->tags = calloc(totalTag, sizeof(StrColumn));
+    assert(superTbls->tags);
 
+    for (int k = 0; k < tagSize; ++k) {
+        StrColumn* tagCase = calloc(1, sizeof(StrColumn));
+        assert(tagCase);
+        cJSON* tag = cJSON_GetArrayItem(tags, k);
+        if (tag == NULL){
+            continue;
+        }
         count = 1;
         cJSON* countObj = cJSON_GetObjectItem(tag, "count");
         if (countObj && countObj->type == cJSON_Number) {
             count = countObj->valueint;
         } else if (countObj && countObj->type != cJSON_Number) {
+            code = -1;
             errorPrint("%s", "failed to read json, column count not found\n");
             goto PARSE_OVER;
         } else {
             count = 1;
         }
 
-        // column info
-        memset(&columnCase, 0, sizeof(StrColumn));
+        // tag info
         cJSON *dataType = cJSON_GetObjectItem(tag, "type");
         if (!dataType || dataType->type != cJSON_String
                 || dataType->valuestring == NULL) {
+            code = -1;
             errorPrint("%s", "failed to read json, tag type not found\n");
             goto PARSE_OVER;
         }
-        tstrncpy(columnCase.dataType, dataType->valuestring,
+        tstrncpy(tagCase->dataType, dataType->valuestring,
                 min(DATATYPE_BUFF_LEN, strlen(dataType->valuestring) + 1));
 
         cJSON* dataLen = cJSON_GetObjectItem(tag, "len");
         if (dataLen && dataLen->type == cJSON_Number) {
-            columnCase.dataLen = dataLen->valueint;
+            tagCase->dataLen = dataLen->valueint;
         } else if (dataLen && dataLen->type != cJSON_Number) {
+            code = -1;
             errorPrint("%s", "failed to read json, column len not found\n");
             goto PARSE_OVER;
         } else {
-            columnCase.dataLen = 0;
+            tagCase->dataLen = 0;
         }
 
         for (int n = 0; n < count; ++n) {
-            tstrncpy(superTbls->tags[index].dataType, columnCase.dataType,
-                    min(DATATYPE_BUFF_LEN, strlen(columnCase.dataType) + 1));
-            superTbls->tags[index].dataLen = columnCase.dataLen;
+            tstrncpy(superTbls->tags[index].dataType, tagCase->dataType,
+                    min(DATATYPE_BUFF_LEN, strlen(tagCase->dataType) + 1));
+            superTbls->tags[index].dataLen = tagCase->dataLen;
+            if (0 == strncasecmp(superTbls->tags[index].dataType,
+                    "INT", strlen("INT"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_INT;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "TINYINT", strlen("TINYINT"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_TINYINT;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "SMALLINT", strlen("SMALLINT"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_SMALLINT;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "BIGINT", strlen("BIGINT"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_BIGINT;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "FLOAT", strlen("FLOAT"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_FLOAT;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "DOUBLE", strlen("DOUBLE"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_DOUBLE;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "BINARY", strlen("BINARY"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_BINARY;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "NCHAR", strlen("NCHAR"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_NCHAR;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "BOOL", strlen("BOOL"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_BOOL;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "TIMESTAMP", strlen("TIMESTAMP"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_TIMESTAMP;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "UTINYINT", strlen("UTINYINT"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_UTINYINT;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "USMALLINT", strlen("USMALLINT"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_USMALLINT;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "UINT", strlen("UINT"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_UINT;
+            } else if (0 == strncasecmp(superTbls->tags[index].dataType,
+                        "UBIGINT", strlen("UBIGINT"))) {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_UBIGINT;
+            } else {
+                superTbls->tags[index].data_type = TSDB_DATA_TYPE_NULL;
+            }
             index++;
         }
+        tmfree(tagCase);
     }
-
-    if (index > TSDB_MAX_TAGS) {
-        errorPrint("failed to read json, tags size overflow, allowed max tag count is %d\n",
-                TSDB_MAX_TAGS);
-        goto PARSE_OVER;
-    }
-
-    superTbls->tagCount = index;
-
-    for (int t = 0; t < superTbls->tagCount; t++) {
-        if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "INT", strlen("INT"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_INT;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "TINYINT", strlen("TINYINT"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_TINYINT;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "SMALLINT", strlen("SMALLINT"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_SMALLINT;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "BIGINT", strlen("BIGINT"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_BIGINT;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "FLOAT", strlen("FLOAT"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_FLOAT;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "DOUBLE", strlen("DOUBLE"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_DOUBLE;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "BINARY", strlen("BINARY"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_BINARY;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "NCHAR", strlen("NCHAR"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_NCHAR;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "BOOL", strlen("BOOL"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_BOOL;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "TIMESTAMP", strlen("TIMESTAMP"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_TIMESTAMP;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "UTINYINT", strlen("UTINYINT"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_UTINYINT;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "USMALLINT", strlen("USMALLINT"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_USMALLINT;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "UINT", strlen("UINT"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_UINT;
-        } else if (0 == strncasecmp(superTbls->tags[t].dataType,
-                    "UBIGINT", strlen("UBIGINT"))) {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_UBIGINT;
-        } else {
-            superTbls->tags[t].data_type = TSDB_DATA_TYPE_NULL;
-        }
-    }
-
-    if ((superTbls->columnCount + superTbls->tagCount + 1 /* ts */) > TSDB_MAX_COLUMNS) {
-        errorPrint("columns + tags is more than allowed max columns count: %d\n",
-                TSDB_MAX_COLUMNS);
-        goto PARSE_OVER;
-    }
-    ret = true;
+    assert(index == totalTag);
 
 PARSE_OVER:
-    return ret;
+    return code;
 }
 
-static bool getMetaFromInsertJsonFile(cJSON* root) {
-    bool  ret = false;
+static int getMetaFromInsertJsonFile(cJSON* root) {
+    int32_t code = 0;
 
     cJSON* cfgdir = cJSON_GetObjectItem(root, "cfgdir");
     if (cfgdir && cfgdir->type == cJSON_String && cfgdir->valuestring != NULL) {
@@ -5225,6 +5252,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     } else if (!host) {
         tstrncpy(g_Dbs.host, "127.0.0.1", MAX_HOSTNAME_SIZE);
     } else {
+        code = -1;
         errorPrint("%s", "failed to read json, host not found\n");
         goto PARSE_OVER;
     }
@@ -5263,6 +5291,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     } else if (!threads) {
         g_Dbs.threadCount = DEFAULT_NTHREADS;
     } else {
+        code = -1;
         errorPrint("%s", "failed to read json, threads not found\n");
         goto PARSE_OVER;
     }
@@ -5273,6 +5302,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     } else if (!threads2) {
         g_Dbs.threadCountForCreateTbl = DEFAULT_NTHREADS;
     } else {
+        code = -1;
         errorPrint("%s", "failed to read json, threads2 not found\n");
         goto PARSE_OVER;
     }
@@ -5280,6 +5310,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     cJSON* gInsertInterval = cJSON_GetObjectItem(root, "insert_interval");
     if (gInsertInterval && gInsertInterval->type == cJSON_Number) {
         if (gInsertInterval->valueint <0) {
+            code = -1;
             errorPrint("%s", "failed to read json, insert interval input mistake\n");
             goto PARSE_OVER;
         }
@@ -5287,6 +5318,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     } else if (!gInsertInterval) {
         g_args.insert_interval = DEFAULT_INSERT_INTERVAL;
     } else {
+        code = -1;
         errorPrint("%s", "failed to read json, insert_interval input mistake\n");
         goto PARSE_OVER;
     }
@@ -5294,6 +5326,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     cJSON* interlaceRows = cJSON_GetObjectItem(root, "interlace_rows");
     if (interlaceRows && interlaceRows->type == cJSON_Number) {
         if (interlaceRows->valueint < 0) {
+            code = -1;
             errorPrint("%s", "failed to read json, interlaceRows input mistake\n");
             goto PARSE_OVER;
 
@@ -5302,6 +5335,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     } else if (!interlaceRows) {
         g_args.interlaceRows = DEFAULT_INTERLACE_ROWS; // 0 means progressive mode, > 0 mean interlace mode. max value is less or equ num_of_records_per_req
     } else {
+        code = -1;
         errorPrint("%s", "failed to read json, interlaceRows input mistake\n");
         goto PARSE_OVER;
     }
@@ -5309,6 +5343,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     cJSON* maxSqlLen = cJSON_GetObjectItem(root, "max_sql_len");
     if (maxSqlLen && maxSqlLen->type == cJSON_Number) {
         if (maxSqlLen->valueint < 0) {
+            code = -1;
             errorPrint("%s() LN%d, failed to read json, max_sql_len input mistake\n",
                     __func__, __LINE__);
             goto PARSE_OVER;
@@ -5317,6 +5352,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     } else if (!maxSqlLen) {
         g_args.max_sql_len = TSDB_MAX_ALLOWED_SQL_LEN;
     } else {
+        code = -1;
         errorPrint("%s() LN%d, failed to read json, max_sql_len input mistake\n",
                 __func__, __LINE__);
         goto PARSE_OVER;
@@ -5325,6 +5361,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     cJSON* numRecPerReq = cJSON_GetObjectItem(root, "num_of_records_per_req");
     if (numRecPerReq && numRecPerReq->type == cJSON_Number) {
         if (numRecPerReq->valueint <= 0) {
+            code = -1;
             errorPrint("%s() LN%d, failed to read json, num_of_records_per_req input mistake\n",
                     __func__, __LINE__);
             goto PARSE_OVER;
@@ -5340,6 +5377,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     } else if (!numRecPerReq) {
         g_args.reqPerReq = MAX_RECORDS_PER_REQ;
     } else {
+        code = -1;
         errorPrint("%s() LN%d, failed to read json, num_of_records_per_req not found\n",
                 __func__, __LINE__);
         goto PARSE_OVER;
@@ -5348,6 +5386,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     cJSON* prepareRand = cJSON_GetObjectItem(root, "prepared_rand");
     if (prepareRand && prepareRand->type == cJSON_Number) {
         if (prepareRand->valueint <= 0) {
+            code = -1;
             errorPrint("%s() LN%d, failed to read json, prepared_rand input mistake\n",
                     __func__, __LINE__);
             goto PARSE_OVER;
@@ -5356,6 +5395,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     } else if (!prepareRand) {
         g_args.prepared_rand = DEFAULT_PREPARED_RAND;
     } else {
+        code = -1;
         errorPrint("%s() LN%d, failed to read json, prepared_rand not found\n",
                 __func__, __LINE__);
         goto PARSE_OVER;
@@ -5375,6 +5415,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
     } else if (!answerPrompt) {
         g_args.answer_yes = true;   // default is no, mean answer_yes.
     } else {
+        code = -1;
         errorPrint("%s", "failed to read json, confirm_parameter_prompt input mistake\n");
         goto PARSE_OVER;
     }
@@ -5391,12 +5432,14 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
 
     cJSON* dbs = cJSON_GetObjectItem(root, "databases");
     if (!dbs || dbs->type != cJSON_Array) {
+        code = -1;
         errorPrint("%s", "failed to read json, databases not found\n");
         goto PARSE_OVER;
     }
 
     int dbSize = cJSON_GetArraySize(dbs);
     if (dbSize > MAX_DB_COUNT) {
+        code = -1;
         errorPrint(
                 "failed to read json, databases size overflow, max database is %d\n",
                 MAX_DB_COUNT);
@@ -5412,12 +5455,14 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         // dbinfo
         cJSON *dbinfo = cJSON_GetObjectItem(dbinfos, "dbinfo");
         if (!dbinfo || dbinfo->type != cJSON_Object) {
+            code = -1;
             errorPrint("%s", "failed to read json, dbinfo not found\n");
             goto PARSE_OVER;
         }
 
         cJSON *dbName = cJSON_GetObjectItem(dbinfo, "name");
         if (!dbName || dbName->type != cJSON_String || dbName->valuestring == NULL) {
+            code = -1;
             errorPrint("%s", "failed to read json, db name not found\n");
             goto PARSE_OVER;
         }
@@ -5433,6 +5478,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!drop) {
             g_Dbs.db[i].drop = g_args.drop_database;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, drop input mistake\n");
             goto PARSE_OVER;
         }
@@ -5445,6 +5491,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!precision) {
             memset(g_Dbs.db[i].dbCfg.precision, 0, SMALL_BUFF_LEN);
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, precision not found\n");
             goto PARSE_OVER;
         }
@@ -5455,6 +5502,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!update) {
             g_Dbs.db[i].dbCfg.update = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, update not found\n");
             goto PARSE_OVER;
         }
@@ -5465,6 +5513,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!replica) {
             g_Dbs.db[i].dbCfg.replica = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, replica not found\n");
             goto PARSE_OVER;
         }
@@ -5475,6 +5524,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!keep) {
             g_Dbs.db[i].dbCfg.keep = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, keep not found\n");
             goto PARSE_OVER;
         }
@@ -5485,6 +5535,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!days) {
             g_Dbs.db[i].dbCfg.days = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, days not found\n");
             goto PARSE_OVER;
         }
@@ -5495,6 +5546,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!cache) {
             g_Dbs.db[i].dbCfg.cache = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, cache not found\n");
             goto PARSE_OVER;
         }
@@ -5505,6 +5557,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!blocks) {
             g_Dbs.db[i].dbCfg.blocks = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, block not found\n");
             goto PARSE_OVER;
         }
@@ -5525,6 +5578,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!minRows) {
             g_Dbs.db[i].dbCfg.minRows = 0;    // 0 means default
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, minRows not found\n");
             goto PARSE_OVER;
         }
@@ -5535,6 +5589,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!maxRows) {
             g_Dbs.db[i].dbCfg.maxRows = 0;    // 0 means default
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, maxRows not found\n");
             goto PARSE_OVER;
         }
@@ -5545,6 +5600,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!comp) {
             g_Dbs.db[i].dbCfg.comp = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, comp not found\n");
             goto PARSE_OVER;
         }
@@ -5555,6 +5611,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!walLevel) {
             g_Dbs.db[i].dbCfg.walLevel = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, walLevel not found\n");
             goto PARSE_OVER;
         }
@@ -5565,6 +5622,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!cacheLast) {
             g_Dbs.db[i].dbCfg.cacheLast = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, cacheLast not found\n");
             goto PARSE_OVER;
         }
@@ -5585,6 +5643,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         } else if (!fsync) {
             g_Dbs.db[i].dbCfg.fsync = -1;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, fsync input mistake\n");
             goto PARSE_OVER;
         }
@@ -5592,12 +5651,14 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
         // super_tables
         cJSON *stables = cJSON_GetObjectItem(dbinfos, "super_tables");
         if (!stables || stables->type != cJSON_Array) {
+            code = -1;
             errorPrint("%s", "failed to read json, super_tables not found\n");
             goto PARSE_OVER;
         }
 
         int stbSize = cJSON_GetArraySize(stables);
         if (stbSize > MAX_SUPER_TABLE_COUNT) {
+            code = -1;
             errorPrint(
                     "failed to read json, supertable size overflow, max supertable is %d\n",
                     MAX_SUPER_TABLE_COUNT);
@@ -5614,6 +5675,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             cJSON *stbName = cJSON_GetObjectItem(stbInfo, "name");
             if (!stbName || stbName->type != cJSON_String
                     || stbName->valuestring == NULL) {
+                        code = -1;
                 errorPrint("%s", "failed to read json, stb name not found\n");
                 goto PARSE_OVER;
             }
@@ -5622,6 +5684,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
 
             cJSON *prefix = cJSON_GetObjectItem(stbInfo, "childtable_prefix");
             if (!prefix || prefix->type != cJSON_String || prefix->valuestring == NULL) {
+                code = -1;
                 errorPrint("%s", "failed to read json, childtable_prefix not found\n");
                 goto PARSE_OVER;
             }
@@ -5642,6 +5705,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!escapeChar) {
                 g_Dbs.db[i].superTbls[j].escapeChar = false;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, escape_character not found\n");
                 goto PARSE_OVER;
             }
@@ -5661,6 +5725,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!autoCreateTbl) {
                 g_Dbs.db[i].superTbls[j].autoCreateTable = PRE_CREATE_SUBTBL;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, auto_create_table not found\n");
                 goto PARSE_OVER;
             }
@@ -5671,6 +5736,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!batchCreateTbl) {
                 g_Dbs.db[i].superTbls[j].batchCreateTableNum = DEFAULT_CREATE_BATCH;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, batch_create_tbl_num not found\n");
                 goto PARSE_OVER;
             }
@@ -5691,6 +5757,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!childTblExists) {
                 g_Dbs.db[i].superTbls[j].childTblExists = TBL_NO_EXISTS;
             } else {
+                code = -1;
                 errorPrint("%s",
                         "failed to read json, child_table_exists not found\n");
                 goto PARSE_OVER;
@@ -5702,6 +5769,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
 
             cJSON* count = cJSON_GetObjectItem(stbInfo, "childtable_count");
             if (!count || count->type != cJSON_Number || 0 >= count->valueint) {
+                code = -1;
                 errorPrint("%s",
                         "failed to read json, childtable_count input mistake\n");
                 goto PARSE_OVER;
@@ -5719,6 +5787,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
                 tstrncpy(g_Dbs.db[i].superTbls[j].dataSource, "rand",
                         min(SMALL_BUFF_LEN, strlen("rand") + 1));
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, data_source not found\n");
                 goto PARSE_OVER;
             }
@@ -5736,6 +5805,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
                     g_Dbs.db[i].superTbls[j].iface= SML_IFACE;
                     g_args.iface = SML_IFACE;
                 } else {
+                    code = -1;
                     errorPrint("failed to read json, insert_mode %s not recognized\n",
                             stbIface->valuestring);
                     goto PARSE_OVER;
@@ -5743,6 +5813,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!stbIface) {
                 g_Dbs.db[i].superTbls[j].iface = TAOSC_IFACE;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, insert_mode not found\n");
                 goto PARSE_OVER;
             }
@@ -5751,6 +5822,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             if ((childTbl_limit) && (g_Dbs.db[i].drop != true)
                     && (g_Dbs.db[i].superTbls[j].childTblExists == TBL_ALREADY_EXISTS)) {
                 if (childTbl_limit->type != cJSON_Number) {
+                    code = -1;
                     errorPrint("%s", "failed to read json, childtable_limit\n");
                     goto PARSE_OVER;
                 }
@@ -5764,6 +5836,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
                     && (g_Dbs.db[i].superTbls[j].childTblExists == TBL_ALREADY_EXISTS)) {
                 if ((childTbl_offset->type != cJSON_Number)
                         || (0 > childTbl_offset->valueint)) {
+                            code = -1;
                     errorPrint("%s", "failed to read json, childtable_offset\n");
                     goto PARSE_OVER;
                 }
@@ -5780,6 +5853,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
                 tstrncpy(g_Dbs.db[i].superTbls[j].startTimestamp,
                         "now", TSDB_DB_NAME_LEN);
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, start_timestamp not found\n");
                 goto PARSE_OVER;
             }
@@ -5790,6 +5864,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!timestampStep) {
                 g_Dbs.db[i].superTbls[j].timeStampStep = g_args.timestamp_step;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, timestamp_step not found\n");
                 goto PARSE_OVER;
             }
@@ -5805,6 +5880,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
                 tstrncpy(g_Dbs.db[i].superTbls[j].sampleFormat, "csv",
                         SMALL_BUFF_LEN);
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, sample_format not found\n");
                 goto PARSE_OVER;
             }
@@ -5820,6 +5896,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
                 memset(g_Dbs.db[i].superTbls[j].sampleFile, 0,
                         MAX_FILE_NAME_LEN);
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, sample_file not found\n");
                 goto PARSE_OVER;
             }
@@ -5837,6 +5914,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!useSampleTs) {
                 g_Dbs.db[i].superTbls[j].useSampleTs = false;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, use_sample_ts not found\n");
                 goto PARSE_OVER;
             }
@@ -5855,6 +5933,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
                 memset(g_Dbs.db[i].superTbls[j].tagsFile, 0, MAX_FILE_NAME_LEN);
                 g_Dbs.db[i].superTbls[j].tagSource = 0;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, tags_file not found\n");
                 goto PARSE_OVER;
             }
@@ -5871,6 +5950,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!maxSqlLen) {
                 g_Dbs.db[i].superTbls[j].maxSqlLen = g_args.max_sql_len;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, stbMaxSqlLen input mistake\n");
                 goto PARSE_OVER;
             }
@@ -5895,6 +5975,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             cJSON* insertRows = cJSON_GetObjectItem(stbInfo, "insert_rows");
             if (insertRows && insertRows->type == cJSON_Number) {
                 if (insertRows->valueint < 0) {
+                    code = -1;
                     errorPrint("%s", "failed to read json, insert_rows input mistake\n");
                     goto PARSE_OVER;
                 }
@@ -5902,6 +5983,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!insertRows) {
                 g_Dbs.db[i].superTbls[j].insertRows = 0x7FFFFFFFFFFFFFFF;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, insert_rows input mistake\n");
                 goto PARSE_OVER;
             }
@@ -5909,6 +5991,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             cJSON* stbInterlaceRows = cJSON_GetObjectItem(stbInfo, "interlace_rows");
             if (stbInterlaceRows && stbInterlaceRows->type == cJSON_Number) {
                 if (stbInterlaceRows->valueint < 0) {
+                    code = -1;
                     errorPrint("%s", "failed to read json, interlace rows input mistake\n");
                     goto PARSE_OVER;
                 }
@@ -5926,6 +6009,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!stbInterlaceRows) {
                 g_Dbs.db[i].superTbls[j].interlaceRows = g_args.interlaceRows; // 0 means progressive mode, > 0 mean interlace mode. max value is less or equ num_of_records_per_req
             } else {
+                code = -1;
                 errorPrint(
                         "%s", "failed to read json, interlace rows input mistake\n");
                 goto PARSE_OVER;
@@ -5943,6 +6027,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!disorderRatio) {
                 g_Dbs.db[i].superTbls[j].disorderRatio = 0;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, disorderRatio not found\n");
                 goto PARSE_OVER;
             }
@@ -5953,6 +6038,7 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
             } else if (!disorderRange) {
                 g_Dbs.db[i].superTbls[j].disorderRange = DEFAULT_DISORDER_RANGE;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, disorderRange not found\n");
                 goto PARSE_OVER;
             }
@@ -5969,22 +6055,22 @@ static bool getMetaFromInsertJsonFile(cJSON* root) {
                         __func__, __LINE__, g_args.insert_interval);
                 g_Dbs.db[i].superTbls[j].insertInterval = g_args.insert_interval;
             } else {
+                code = -1;
                 errorPrint("%s", "failed to read json, insert_interval input mistake\n");
                 goto PARSE_OVER;
             }
 
-            int retVal = getColumnAndTagTypeFromInsertJsonFile(
+            code = getColumnAndTagTypeFromInsertJsonFile(
                     stbInfo, &g_Dbs.db[i].superTbls[j]);
-            if (false == retVal) {
+            if (code) {
+                errorPrint("%s", "failed to getColumnAndTagTypeFromInsertJsonFile\n");
                 goto PARSE_OVER;
             }
         }
     }
 
-    ret = true;
-
 PARSE_OVER:
-    return ret;
+    return code;
 }
 
 static bool getMetaFromQueryJsonFile(cJSON* root) {
@@ -6451,16 +6537,15 @@ PARSE_OVER:
     return ret;
 }
 
-static bool getInfoFromJsonFile(char* file) {
+static int getInfoFromJsonFile(char* file) {
     debugPrint("%s %d %s\n", __func__, __LINE__, file);
-
+    int32_t code = 0;
     FILE *fp = fopen(file, "r");
     if (!fp) {
         errorPrint("failed to read %s, reason:%s\n", file, strerror(errno));
-        return false;
+        return -1;
     }
 
-    bool  ret = false;
     int   maxLen = MAX_JSON_BUFF;
     char *content = calloc(1, maxLen + 1);
     int   len = fread(content, 1, maxLen, fp);
@@ -6468,12 +6553,13 @@ static bool getInfoFromJsonFile(char* file) {
         free(content);
         fclose(fp);
         errorPrint("failed to read %s, content is null", file);
-        return false;
+        return -1;
     }
 
     content[len] = 0;
     cJSON* root = cJSON_Parse(content);
     if (root == NULL) {
+        code = -1;
         errorPrint("failed to cjson parse %s, invalid json format\n", file);
         goto PARSE_OVER;
     }
@@ -6487,12 +6573,14 @@ static bool getInfoFromJsonFile(char* file) {
         } else if (0 == strcasecmp("subscribe", filetype->valuestring)) {
             g_args.test_mode = SUBSCRIBE_TEST;
         } else {
+            code = -1;
             errorPrint("%s", "failed to read json, filetype not support\n");
             goto PARSE_OVER;
         }
     } else if (!filetype) {
         g_args.test_mode = INSERT_TEST;
     } else {
+        code = -1;
         errorPrint("%s", "failed to read json, filetype not found\n");
         goto PARSE_OVER;
     }
@@ -6500,12 +6588,13 @@ static bool getInfoFromJsonFile(char* file) {
     if (INSERT_TEST == g_args.test_mode) {
         memset(&g_Dbs, 0, sizeof(SDbs));
         g_Dbs.use_metric = g_args.use_metric;
-        ret = getMetaFromInsertJsonFile(root);
+        code = getMetaFromInsertJsonFile(root);
     } else if ((QUERY_TEST == g_args.test_mode)
             || (SUBSCRIBE_TEST == g_args.test_mode)) {
         memset(&g_queryInfo, 0, sizeof(SQueryMetaInfo));
-        ret = getMetaFromQueryJsonFile(root);
+        code = getMetaFromQueryJsonFile(root);
     } else {
+        code = -1;
         errorPrint("%s",
                 "input json file type error! please input correct file type: insert or query or subscribe\n");
         goto PARSE_OVER;
@@ -6515,7 +6604,7 @@ PARSE_OVER:
     free(content);
     cJSON_Delete(root);
     fclose(fp);
-    return ret;
+    return code;
 }
 
 static int prepareSampleData() {
@@ -11583,45 +11672,44 @@ static void prompt()
 }
 
 static int insertTestProcess() {
-
+    int32_t code;
     setupForAnsiEscape();
-    int ret = printfInsertMeta();
+    code = printfInsertMeta();
     resetAfterAnsiEscape();
 
-    if (ret == -1)
-        exit(EXIT_FAILURE);
-
+    if (code) {
+        errorPrint2("%s() LN%d, printfInsertMeta() failed\n", __func__, __LINE__);
+        goto end;
+    }
+        
     debugPrint("%d result file: %s\n", __LINE__, g_Dbs.resultFile);
     g_fpOfInsertResult = fopen(g_Dbs.resultFile, "a");
     if (NULL == g_fpOfInsertResult) {
+        code = -1;
         errorPrint("Failed to open %s for save result\n", g_Dbs.resultFile);
-        return -1;
+        goto end;
     }
 
-    if (g_fpOfInsertResult)
+    if (g_fpOfInsertResult){
         printfInsertMetaToFile(g_fpOfInsertResult);
+    }
 
     prompt();
 
     init_rand_data();
 
     // create database and super tables
-    char *cmdBuffer = calloc(1, BUFFER_SIZE);
-    assert(cmdBuffer);
-
-    if(createDatabasesAndStables(cmdBuffer) != 0) {
-        if (g_fpOfInsertResult)
-            fclose(g_fpOfInsertResult);
-        free(cmdBuffer);
-        return -1;
+    code = createDatabasesAndStables();
+    if(code) {
+        errorPrint2("%s() LN%d, createDatabasesAndStables() failed\n", __func__, __LINE__);
+        goto end;
     }
-    free(cmdBuffer);
 
     // pretreatment
-    if (prepareSampleData() != 0) {
-        if (g_fpOfInsertResult)
-            fclose(g_fpOfInsertResult);
-        return -1;
+    code = prepareSampleData();
+    if (code) { 
+        errorPrint2("%s() LN%d, prepareSampleData() failed\n", __func__, __LINE__);
+        goto end;
     }
 
     double start;
@@ -11686,19 +11774,12 @@ static int insertTestProcess() {
             }
         }
     }
-    //end = taosGetTimestampMs();
-
-    //int64_t    totalInsertRows = 0;
-    //int64_t    totalAffectedRows = 0;
-    //for (int i = 0; i < g_Dbs.dbCount; i++) {
-    //  for (int j = 0; j < g_Dbs.db[i].superTblCount; j++) {
-    //  totalInsertRows+= g_Dbs.db[i].superTbls[j].totalInsertRows;
-    //  totalAffectedRows += g_Dbs.db[i].superTbls[j].totalAffectedRows;
-    //}
-    //printf("Spent %.4f seconds to insert rows: %"PRId64", affected rows: %"PRId64" with %d thread(s)\n\n", end - start, totalInsertRows, totalAffectedRows, g_Dbs.threadCount);
+end:
     postFreeResource();
-
-    return 0;
+    if (g_fpOfInsertResult){
+        fclose(g_fpOfInsertResult);
+    }
+    return code;
 }
 
 static void *specifiedTableQuery(void *sarg) {
@@ -12812,28 +12893,29 @@ static void querySqlFile(TAOS* taos, char* sqlFile)
     return;
 }
 
-static void testMetaFile() {
+static int testMetaFile() {
     if (INSERT_TEST == g_args.test_mode) {
-        if (g_Dbs.cfgDir[0])
+        if (g_Dbs.cfgDir[0]){
             taos_options(TSDB_OPTION_CONFIGDIR, g_Dbs.cfgDir);
-
-        insertTestProcess();
+        }
+        return insertTestProcess();
 
     } else if (QUERY_TEST == g_args.test_mode) {
-        if (g_queryInfo.cfgDir[0])
+        if (g_queryInfo.cfgDir[0]){
             taos_options(TSDB_OPTION_CONFIGDIR, g_queryInfo.cfgDir);
-
-        queryTestProcess();
+        }
+        return queryTestProcess();
 
     } else if (SUBSCRIBE_TEST == g_args.test_mode) {
-        if (g_queryInfo.cfgDir[0])
+        if (g_queryInfo.cfgDir[0]){
             taos_options(TSDB_OPTION_CONFIGDIR, g_queryInfo.cfgDir);
-
-        subscribeTestProcess();
-
+        }
+        return subscribeTestProcess();
     }  else {
-        ;
+        errorPrint2("%s() LN%d, Unsupport test mode (%d)", __func__, __LINE__, g_args.test_mode);
+        return -1;
     }
+    return 0;
 }
 
 static void queryAggrFunc() {
@@ -12903,18 +12985,22 @@ static void testCmdLine() {
 }
 
 int main(int argc, char *argv[]) {
-    parse_args(argc, argv, &g_args);
+    int32_t code = 0;
+    code = parse_args(argc, argv, &g_args);
+    if(code){
+        errorPrint2("%s() LN%d, parse_args failed.\n", __func__, __LINE__);
+        exit(EXIT_FAILURE);
+    }
 
     debugPrint("meta file: %s\n", g_args.metaFile);
 
     if (g_args.metaFile) {
         g_totalChildTables = 0;
-
-        if (false == getInfoFromJsonFile(g_args.metaFile)) {
-            printf("Failed to read %s\n", g_args.metaFile);
-            return 1;
+        code = getInfoFromJsonFile(g_args.metaFile);
+        if (code) {
+            errorPrint2("%s() LN%d, getInfoFromJsonFile(%s) failed.\n", __func__, __LINE__, g_args.metaFile);
+            exit(EXIT_FAILURE);
         }
-
         testMetaFile();
     } else {
         memset(&g_Dbs, 0, sizeof(SDbs));
@@ -12942,5 +13028,5 @@ int main(int argc, char *argv[]) {
             free(g_dupstr);
     }
 
-    return 0;
+    return code;
 }
