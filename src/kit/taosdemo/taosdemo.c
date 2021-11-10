@@ -326,6 +326,8 @@ typedef struct SSuperTable_S {
     int64_t      childTblLimit;
     uint64_t     childTblOffset;
 
+    int64_t      startTbId;
+    int64_t      endTbId;
     //  int          multiThreadWriteOneTbl;  // 0: no, 1: yes
     uint32_t     interlaceRows;           //
     int          disorderRatio;           // 0: no disorder, >0: x%
@@ -335,7 +337,7 @@ typedef struct SSuperTable_S {
     uint64_t     insertInterval;          // insert interval, will override global insert interval
     int64_t      insertRows;
     int64_t      timeStampStep;
-    char         startTimestamp[MAX_TB_NAME_SIZE];
+    int64_t     startTimestamp;
     char         sampleFormat[SMALL_BUFF_LEN];  // csv, json
     char         sampleFile[MAX_FILE_NAME_LEN];
     char         tagsFile[MAX_FILE_NAME_LEN];
@@ -411,7 +413,7 @@ typedef struct SDbCfg_S {
     int       cache;
     int       blocks;
     int       quorum;
-    char      precision[SMALL_BUFF_LEN];
+    int       precision;
 } SDbCfg;
 
 typedef struct SDataBase_S {
@@ -420,6 +422,7 @@ typedef struct SDataBase_S {
     SDbCfg       dbCfg;
     uint64_t     superTblCount;
     SSuperTable*  superTbls;
+    SNormalTable* normalTbls;
 } SDataBase;
 
 typedef struct SDbs_S {
@@ -558,6 +561,8 @@ typedef struct SThreadInfo_S {
 
     char**    lines;
     int       sockfd;
+
+    SDataBase* dbInfo;
 } threadInfo;
 
 #ifdef WINDOWS
@@ -2647,6 +2652,7 @@ static void init_rand_data() {
                 g_args.metaFile); } while(0)
 
 static int printfInsertMeta() {
+    setupForAnsiEscape();
     SHOW_PARSE_RESULT_START();
 
     if (g_args.demo_mode) {
@@ -2877,7 +2883,7 @@ static int printfInsertMeta() {
     }
 
     SHOW_PARSE_RESULT_END();
-
+    resetAfterAnsiEscape();
     return 0;
 }
 
@@ -5517,10 +5523,19 @@ static int getMetaFromInsertJsonFile(cJSON* root) {
         cJSON *precision = cJSON_GetObjectItem(dbinfo, "precision");
         if (precision && precision->type == cJSON_String
                 && precision->valuestring != NULL) {
-            tstrncpy(g_Dbs.db[i].dbCfg.precision, precision->valuestring,
-                    SMALL_BUFF_LEN);
+            if (0 == strncasecmp(precision->valuestring, "ms", 2)) {
+                g_Dbs.db[i].dbCfg.precision = TSDB_TIME_PRECISION_MILLI;
+            } else if (0 == strncasecmp(precision->valuestring, "us", 2)) {
+                g_Dbs.db[i].dbCfg.precision = TSDB_TIME_PRECISION_MICRO;
+            } else if (0 == strncasecmp(precision->valuestring, "ns", 2)) {
+                g_Dbs.db[i].dbCfg.precision = TSDB_TIME_PRECISION_NANO;
+            } else {
+                code = -1;
+                errorPrint("unsupport precision: %s\n", precision->valuestring);
+                goto PARSE_OVER;
+            }
         } else if (!precision) {
-            memset(g_Dbs.db[i].dbCfg.precision, 0, SMALL_BUFF_LEN);
+            g_Dbs.db[i].dbCfg.precision = TSDB_TIME_PRECISION_MILLI;
         } else {
             code = -1;
             errorPrint("%s", "failed to read json, precision not found\n");
@@ -5741,6 +5756,111 @@ static int getMetaFromInsertJsonFile(cJSON* root) {
                 goto PARSE_OVER;
             }
 
+            cJSON* count = cJSON_GetObjectItem(stbInfo, "childtable_count");
+            if (!count || count->type != cJSON_Number || 0 >= count->valueint) {
+                code = -1;
+                errorPrint("%s",
+                        "failed to read json, childtable_count input mistake\n");
+                goto PARSE_OVER;
+            }
+            g_Dbs.db[i].superTbls[j].childTblCount = count->valueint;
+            g_totalChildTables += g_Dbs.db[i].superTbls[j].childTblCount;
+
+            cJSON *dataSource = cJSON_GetObjectItem(stbInfo, "data_source");
+            if (dataSource && dataSource->type == cJSON_String
+                    && dataSource->valuestring != NULL) {
+                tstrncpy(g_Dbs.db[i].superTbls[j].dataSource,
+                        dataSource->valuestring,
+                        min(SMALL_BUFF_LEN, strlen(dataSource->valuestring) + 1));
+            } else if (!dataSource) {
+                tstrncpy(g_Dbs.db[i].superTbls[j].dataSource, "rand",
+                        min(SMALL_BUFF_LEN, strlen("rand") + 1));
+            } else {
+                code = -1;
+                errorPrint("%s", "failed to read json, data_source not found\n");
+                goto PARSE_OVER;
+            }
+
+            cJSON *stbIface = cJSON_GetObjectItem(stbInfo, "insert_mode"); // taosc , rest, stmt, sml
+            if (stbIface && stbIface->type == cJSON_String
+                    && stbIface->valuestring != NULL) {
+                if (0 == strcasecmp(stbIface->valuestring, "taosc")) {
+                    g_Dbs.db[i].superTbls[j].iface= TAOSC_IFACE;
+                } else if (0 == strcasecmp(stbIface->valuestring, "rest")) {
+                    g_Dbs.db[i].superTbls[j].iface= REST_IFACE;
+                } else if (0 == strcasecmp(stbIface->valuestring, "stmt")) {
+                    g_Dbs.db[i].superTbls[j].iface= STMT_IFACE;
+                } else if (0 == strcasecmp(stbIface->valuestring, "sml")) {
+                    g_Dbs.db[i].superTbls[j].iface= SML_IFACE;
+                } else {
+                    code = -1;
+                    errorPrint("failed to read json, insert_mode %s not recognized\n",
+                            stbIface->valuestring);
+                    goto PARSE_OVER;
+                }
+            } else if (!stbIface) {
+                g_Dbs.db[i].superTbls[j].iface = TAOSC_IFACE;
+            } else {
+                code = -1;
+                errorPrint("%s", "failed to read json, insert_mode not found\n");
+                goto PARSE_OVER;
+            }
+
+            cJSON* childTbl_limit = cJSON_GetObjectItem(stbInfo, "childtable_limit");
+            if ((childTbl_limit) && (g_Dbs.db[i].drop != true)) {
+                if (childTbl_limit->type != cJSON_Number) {
+                    code = -1;
+                    errorPrint("%s", "failed to read json, childtable_limit\n");
+                    goto PARSE_OVER;
+                }
+                if (childTbl_limit->valueint > g_Dbs.db[i].superTbls[j].childTblCount) {
+                    g_Dbs.db[i].superTbls[j].childTblLimit = g_Dbs.db[i].superTbls[j].childTblCount;
+                } else {
+                    g_Dbs.db[i].superTbls[j].childTblLimit = childTbl_limit->valueint;
+                }
+            } else {
+                g_Dbs.db[i].superTbls[j].childTblLimit = g_Dbs.db[i].superTbls[j].childTblCount;    // select ... limit -1 means all query result, drop = yes mean all table need recreate, limit value is invalid.
+            }
+
+            cJSON* childTbl_offset = cJSON_GetObjectItem(stbInfo, "childtable_offset");
+            if ((childTbl_offset) && (g_Dbs.db[i].drop != true)) {
+                if ((childTbl_offset->type != cJSON_Number)
+                        || (0 > childTbl_offset->valueint)) {
+                            code = -1;
+                    errorPrint("%s", "failed to read json, childtable_offset\n");
+                    goto PARSE_OVER;
+                }
+                if (childTbl_offset->valueint + g_Dbs.db[i].superTbls[j].childTblLimit > g_Dbs.db[i].superTbls[j].childTblCount) {
+                    g_Dbs.db[i].superTbls[j].childTblOffset = g_Dbs.db[i].superTbls[j].childTblCount - g_Dbs.db[i].superTbls[j].childTblLimit;
+                } else {
+                    g_Dbs.db[i].superTbls[j].childTblOffset = childTbl_offset->valueint;
+                }
+            } else {
+                g_Dbs.db[i].superTbls[j].childTblOffset = 0;
+            }
+
+            cJSON *childTblExists = cJSON_GetObjectItem(stbInfo, "child_table_exists"); // yes, no
+            if (childTblExists
+                    && childTblExists->type == cJSON_String
+                    && childTblExists->valuestring != NULL) {
+                if ((0 == strncasecmp(childTblExists->valuestring, "yes", 3))
+                        && (g_Dbs.db[i].drop == false)) {
+                    g_Dbs.db[i].superTbls[j].childTblExists = TBL_ALREADY_EXISTS;
+                } else if ((0 == strncasecmp(childTblExists->valuestring, "no", 2)
+                            || (g_Dbs.db[i].drop == true))) {
+                    g_Dbs.db[i].superTbls[j].childTblExists = TBL_NO_EXISTS;
+                } else {
+                    g_Dbs.db[i].superTbls[j].childTblExists = TBL_NO_EXISTS;
+                }
+            } else if (!childTblExists) {
+                g_Dbs.db[i].superTbls[j].childTblExists = TBL_NO_EXISTS;
+            } else {
+                code = -1;
+                errorPrint("%s",
+                        "failed to read json, child_table_exists not found\n");
+                goto PARSE_OVER;
+            }
+
             cJSON *autoCreateTbl = cJSON_GetObjectItem(stbInfo, "auto_create_table");
             if (autoCreateTbl
                     && autoCreateTbl->type == cJSON_String
@@ -5772,117 +5892,25 @@ static int getMetaFromInsertJsonFile(cJSON* root) {
                 goto PARSE_OVER;
             }
 
-            cJSON *childTblExists = cJSON_GetObjectItem(stbInfo, "child_table_exists"); // yes, no
-            if (childTblExists
-                    && childTblExists->type == cJSON_String
-                    && childTblExists->valuestring != NULL) {
-                if ((0 == strncasecmp(childTblExists->valuestring, "yes", 3))
-                        && (g_Dbs.db[i].drop == false)) {
-                    g_Dbs.db[i].superTbls[j].childTblExists = TBL_ALREADY_EXISTS;
-                } else if ((0 == strncasecmp(childTblExists->valuestring, "no", 2)
-                            || (g_Dbs.db[i].drop == true))) {
-                    g_Dbs.db[i].superTbls[j].childTblExists = TBL_NO_EXISTS;
-                } else {
-                    g_Dbs.db[i].superTbls[j].childTblExists = TBL_NO_EXISTS;
-                }
-            } else if (!childTblExists) {
-                g_Dbs.db[i].superTbls[j].childTblExists = TBL_NO_EXISTS;
-            } else {
-                code = -1;
-                errorPrint("%s",
-                        "failed to read json, child_table_exists not found\n");
-                goto PARSE_OVER;
-            }
-
-            if (TBL_ALREADY_EXISTS == g_Dbs.db[i].superTbls[j].childTblExists) {
-                g_Dbs.db[i].superTbls[j].autoCreateTable = PRE_CREATE_SUBTBL;
-            }
-
-            cJSON* count = cJSON_GetObjectItem(stbInfo, "childtable_count");
-            if (!count || count->type != cJSON_Number || 0 >= count->valueint) {
-                code = -1;
-                errorPrint("%s",
-                        "failed to read json, childtable_count input mistake\n");
-                goto PARSE_OVER;
-            }
-            g_Dbs.db[i].superTbls[j].childTblCount = count->valueint;
-            g_totalChildTables += g_Dbs.db[i].superTbls[j].childTblCount;
-
-            cJSON *dataSource = cJSON_GetObjectItem(stbInfo, "data_source");
-            if (dataSource && dataSource->type == cJSON_String
-                    && dataSource->valuestring != NULL) {
-                tstrncpy(g_Dbs.db[i].superTbls[j].dataSource,
-                        dataSource->valuestring,
-                        min(SMALL_BUFF_LEN, strlen(dataSource->valuestring) + 1));
-            } else if (!dataSource) {
-                tstrncpy(g_Dbs.db[i].superTbls[j].dataSource, "rand",
-                        min(SMALL_BUFF_LEN, strlen("rand") + 1));
-            } else {
-                code = -1;
-                errorPrint("%s", "failed to read json, data_source not found\n");
-                goto PARSE_OVER;
-            }
-
-            cJSON *stbIface = cJSON_GetObjectItem(stbInfo, "insert_mode"); // taosc , rest, stmt
-            if (stbIface && stbIface->type == cJSON_String
-                    && stbIface->valuestring != NULL) {
-                if (0 == strcasecmp(stbIface->valuestring, "taosc")) {
-                    g_Dbs.db[i].superTbls[j].iface= TAOSC_IFACE;
-                } else if (0 == strcasecmp(stbIface->valuestring, "rest")) {
-                    g_Dbs.db[i].superTbls[j].iface= REST_IFACE;
-                } else if (0 == strcasecmp(stbIface->valuestring, "stmt")) {
-                    g_Dbs.db[i].superTbls[j].iface= STMT_IFACE;
-                } else if (0 == strcasecmp(stbIface->valuestring, "sml")) {
-                    g_Dbs.db[i].superTbls[j].iface= SML_IFACE;
-                    g_args.iface = SML_IFACE;
-                } else {
-                    code = -1;
-                    errorPrint("failed to read json, insert_mode %s not recognized\n",
-                            stbIface->valuestring);
-                    goto PARSE_OVER;
-                }
-            } else if (!stbIface) {
-                g_Dbs.db[i].superTbls[j].iface = TAOSC_IFACE;
-            } else {
-                code = -1;
-                errorPrint("%s", "failed to read json, insert_mode not found\n");
-                goto PARSE_OVER;
-            }
-
-            cJSON* childTbl_limit = cJSON_GetObjectItem(stbInfo, "childtable_limit");
-            if ((childTbl_limit) && (g_Dbs.db[i].drop != true)
-                    && (g_Dbs.db[i].superTbls[j].childTblExists == TBL_ALREADY_EXISTS)) {
-                if (childTbl_limit->type != cJSON_Number) {
-                    code = -1;
-                    errorPrint("%s", "failed to read json, childtable_limit\n");
-                    goto PARSE_OVER;
-                }
-                g_Dbs.db[i].superTbls[j].childTblLimit = childTbl_limit->valueint;
-            } else {
-                g_Dbs.db[i].superTbls[j].childTblLimit = -1;    // select ... limit -1 means all query result, drop = yes mean all table need recreate, limit value is invalid.
-            }
-
-            cJSON* childTbl_offset = cJSON_GetObjectItem(stbInfo, "childtable_offset");
-            if ((childTbl_offset) && (g_Dbs.db[i].drop != true)
-                    && (g_Dbs.db[i].superTbls[j].childTblExists == TBL_ALREADY_EXISTS)) {
-                if ((childTbl_offset->type != cJSON_Number)
-                        || (0 > childTbl_offset->valueint)) {
-                            code = -1;
-                    errorPrint("%s", "failed to read json, childtable_offset\n");
-                    goto PARSE_OVER;
-                }
-                g_Dbs.db[i].superTbls[j].childTblOffset = childTbl_offset->valueint;
-            } else {
-                g_Dbs.db[i].superTbls[j].childTblOffset = 0;
-            }
-
             cJSON *ts = cJSON_GetObjectItem(stbInfo, "start_timestamp");
             if (ts && ts->type == cJSON_String && ts->valuestring != NULL) {
+                if (0 == strncasecmp(ts->valuestring, "now", 3)) {
+                    g_Dbs.db[i].superTbls[j].startTimestamp = taosGetTimestamp(g_Dbs.db[i].dbCfg.precision);
+                }
+                code = taosParseTime(
+                        ts->valuestring,
+                        &(g_Dbs.db[i].superTbls[j].startTimestamp),
+                        strlen(ts->valuestring),
+                        g_Dbs.db[i].dbCfg.precision, 0);
+                if (code) {
+                    errorPrint("failed to parse time: %s\n", ts->valuestring);
+                    goto PARSE_OVER;
+                }
+                
                 tstrncpy(g_Dbs.db[i].superTbls[j].startTimestamp,
                         ts->valuestring, TSDB_DB_NAME_LEN);
             } else if (!ts) {
-                tstrncpy(g_Dbs.db[i].superTbls[j].startTimestamp,
-                        "now", TSDB_DB_NAME_LEN);
+                g_Dbs.db[i].superTbls[j].startTimestamp = taosGetTimestamp(g_Dbs.db[i]->dbCfg.precision);
             } else {
                 code = -1;
                 errorPrint("%s", "failed to read json, start_timestamp not found\n");
@@ -10698,7 +10726,8 @@ static void* syncWriteProgressiveSml(threadInfo *pThreadInfo) {
 }
 
 // sync insertion progressive data
-static void* syncWriteProgressive(threadInfo *pThreadInfo) {
+static void* syncWriteProgressive(void* sarg) {
+    threadInfo *pThreadInfo = (threadInfo *)sarg;
     debugPrint("%s() LN%d: ### progressive write\n", __func__, __LINE__);
 
     SSuperTable* stbInfo = pThreadInfo->stbInfo;
@@ -11035,39 +11064,29 @@ static int convertHostToServAddr(char *host, uint16_t port, struct sockaddr_in *
     return 0;
 }
 
-static void startMultiThreadInsertData(int threads, char* db_name,
-        char* precision, SSuperTable* stbInfo) {
-
-    int32_t timePrec = TSDB_TIME_PRECISION_MILLI;
-    if (0 != precision[0]) {
-        if (0 == strncasecmp(precision, "ms", 2)) {
-            timePrec = TSDB_TIME_PRECISION_MILLI;
-        } else if (0 == strncasecmp(precision, "us", 2)) {
-            timePrec = TSDB_TIME_PRECISION_MICRO;
-        } else if (0 == strncasecmp(precision, "ns", 2)) {
-            timePrec = TSDB_TIME_PRECISION_NANO;
-        } else {
-            errorPrint2("Not support precision: %s\n", precision);
-            exit(EXIT_FAILURE);
+static int startMultiThreadInsertData(SDataBase* dbInfo) {
+    int32_t code = 0;
+    for (int i = 0; i < dbInfo->superTblCount; i++) {
+        if (dbInfo->superTbls[i].interlaceRows == 0) {
+            code = progressiveInsertData(dbInfo);
+            if (code) {
+                errorPrint2("%s() LN%d, progressiveInsertData() failed\n", __func__, __LINE__);
+                return code;
+            }
+            break;
         }
     }
-
-    int64_t startTime;
-    if (stbInfo) {
-        if (0 == strncasecmp(stbInfo->startTimestamp, "now", 3)) {
-            startTime = taosGetTimestamp(timePrec);
-        } else {
-            if (TSDB_CODE_SUCCESS != taosParseTime(
-                        stbInfo->startTimestamp,
-                        &startTime,
-                        strlen(stbInfo->startTimestamp),
-                        timePrec, 0)) {
-                ERROR_EXIT("failed to parse time!\n");
+    
+    for (int i = 0; i < dbInfo->superTblCount; i++) {
+        if (dbInfo->superTbls[i].interlaceRows > 0) {
+            code = interlaceInsertData(dbInfo->superTbls[i]);
+            if (code) {
+                errorPrint2("%s() LN%d, interlaceInsertData() failed for stable: %d\n", __func__, __LINE__, i);
+                return code;
             }
         }
-    } else {
-        startTime = DEFAULT_START_TIME;
     }
+<<<<<<< Updated upstream
     debugPrint("%s() LN%d, startTime= %"PRId64"\n",
             __func__, __LINE__, startTime);
 
@@ -11117,265 +11136,106 @@ static void startMultiThreadInsertData(int threads, char* db_name,
 
                     if (stbInfo->childTblCount < stbInfo->childTblOffset) {
                         printf("WARNING: offset will not be used since the child tables count is less then offset!\n");
+=======
+    return code;
+}
+>>>>>>> Stashed changes
 
-                        stbInfo->childTblOffset = 0;
-                    }
-                    stbInfo->childTblLimit =
-                        stbInfo->childTblCount - stbInfo->childTblOffset;
-                }
-
-                offset = stbInfo->childTblOffset;
-                limit = stbInfo->childTblLimit;
-            } else {
-                limit = stbInfo->childTblCount;
-                offset = 0;
-            }
-
-            ntables = limit;
-            tableFrom = offset;
-
-            if ((stbInfo->childTblExists != TBL_NO_EXISTS)
-                    && ((stbInfo->childTblOffset + stbInfo->childTblLimit)
-                        > stbInfo->childTblCount)) {
-                printf("WARNING: specified offset + limit > child table count!\n");
-                prompt();
-            }
-
-            if ((stbInfo->childTblExists != TBL_NO_EXISTS)
-                    && (0 == stbInfo->childTblLimit)) {
-                printf("WARNING: specified limit = 0, which cannot find table name to insert or query! \n");
-                prompt();
-            }
-
-            stbInfo->childTblName = (char*)calloc(1,
-                    limit * TSDB_TABLE_NAME_LEN);
-            if (stbInfo->childTblName == NULL) {
-                taos_close(taos0);
-                errorPrint2("%s() LN%d, alloc memory failed!\n", __func__, __LINE__);
-                exit(EXIT_FAILURE);
-            }
-
-            int64_t childTblCount;
-            getChildNameOfSuperTableWithLimitAndOffset(
-                    taos0,
-                    db_name, stbInfo->stbName,
-                    &stbInfo->childTblName, &childTblCount,
-                    limit,
-                    offset, stbInfo->escapeChar);
-            ntables = childTblCount;
-        } else {
-            ntables = stbInfo->childTblCount;
+static int progressiveInsertData(SDataBase* dbInfo) {
+    int32_t code = 0;
+    int64_t total_table = 0;
+    uint64_t tableFrom = 0;
+    for (int i = 0; i < dbInfo->superTblCount; i++) {
+        if (dbInfo->superTbls[i].interlaceRows == 0) {
+            total_table += dbInfo->superTbls[i].childTblCount;
         }
-    } else {
-        ntables = g_args.ntables;
-        tableFrom = 0;
+    }
+    dbInfo->normalTbls = calloc(total_table, sizeof(SNormalTable));
+    assert(dbInfo->normalTbls);
+
+    for (int i = 0; i < total_table; i++) {
+        int tmp_table_id = i;
+        for (int j = 0; j < dbInfo->superTblCount; j++) {
+            if (dbInfo->superTbls[j].interlaceRows == 0) {
+                if (tmp_table_id < dbInfo->superTbls[j].childTblCount) {
+                    dbInfo->normalTbls[i].stbInfo = &(dbInfo->superTbls[j]);
+                    dbInfo->normalTbls[i].tbSeq = tmp_table_id;
+                    break;
+                } else {
+                    tmp_table_id -= dbInfo->superTbls[j].childTblCount;
+                }
+            }
+        }
     }
 
-    taos_close(taos0);
-
-    int64_t a = ntables / threads;
+    int64_t a = total_table / g_Dbs.threadCount;
     if (a < 1) {
-        threads = ntables;
+        g_Dbs.threadCount = total_table;
         a = 1;
     }
 
     int64_t b = 0;
-    if (threads != 0) {
-        b = ntables % threads;
+    if (g_Dbs.threadCount != 0) {
+        b = total_table % g_Dbs.threadCount;
     }
 
-    if (g_args.iface == REST_IFACE || ((stbInfo) && (stbInfo->iface == REST_IFACE))) {
-        if (convertHostToServAddr(
-                    g_Dbs.host, g_Dbs.port, &(g_Dbs.serv_addr)) != 0) {
-            ERROR_EXIT("convert host to server address");
-        }
-    }
-
-    pthread_t *pids = calloc(1, threads * sizeof(pthread_t));
-    threadInfo *infos = calloc(1, threads * sizeof(threadInfo));
+    pthread_t *pids = calloc(1, g_Dbs.threadCount * sizeof(pthread_t));
+    threadInfo *infos = calloc(1, g_Dbs.threadCount * sizeof(threadInfo));
     assert(pids != NULL);
     assert(infos != NULL);
 
-    char *stmtBuffer = calloc(1, BUFFER_SIZE);
-    assert(stmtBuffer);
-
-#if STMT_BIND_PARAM_BATCH == 1
-    uint32_t interlaceRows = 0;
-    uint32_t batch;
-
-    if (stbInfo) {
-        if (stbInfo->interlaceRows < stbInfo->insertRows)
-            interlaceRows = stbInfo->interlaceRows;
-    } else {
-        if (g_args.interlaceRows < g_args.insertRows)
-            interlaceRows = g_args.interlaceRows;
-    }
-
-    if (interlaceRows > 0) {
-        batch = interlaceRows;
-    } else {
-        batch = (g_args.reqPerReq>g_args.insertRows)?
-            g_args.insertRows:g_args.reqPerReq;
-    }
-
-#endif
-
-    if ((g_args.iface == STMT_IFACE)
-            || ((stbInfo)
-                && (stbInfo->iface == STMT_IFACE))) {
-        char *pstr = stmtBuffer;
-
-        if ((stbInfo)
-                && (AUTO_CREATE_SUBTBL
-                    == stbInfo->autoCreateTable)) {
-            pstr += sprintf(pstr, "INSERT INTO ? USING %s TAGS(?",
-                    stbInfo->stbName);
-            for (int tag = 0; tag < (stbInfo->tagCount - 1);
-                    tag ++ ) {
-                pstr += sprintf(pstr, ",?");
-            }
-            pstr += sprintf(pstr, ") VALUES(?");
-        } else {
-            pstr += sprintf(pstr, "INSERT INTO ? VALUES(?");
-        }
-
-        int columnCount = (stbInfo)?
-            stbInfo->columnCount:
-            g_args.columnCount;
-
-        for (int col = 0; col < columnCount; col ++) {
-            pstr += sprintf(pstr, ",?");
-        }
-        pstr += sprintf(pstr, ")");
-
-        debugPrint("%s() LN%d, stmtBuffer: %s", __func__, __LINE__, stmtBuffer);
-#if STMT_BIND_PARAM_BATCH == 1
-        parseSamplefileToStmtBatch(stbInfo);
-#endif
-    }
-
-    for (int i = 0; i < threads; i++) {
+    for (int i = 0; i < g_Dbs.threadCount; i++) {
         threadInfo *pThreadInfo = infos + i;
         pThreadInfo->threadID = i;
-
-        tstrncpy(pThreadInfo->db_name, db_name, TSDB_DB_NAME_LEN);
-        pThreadInfo->time_precision = timePrec;
-        pThreadInfo->stbInfo = stbInfo;
-
-        pThreadInfo->start_time = startTime;
-        pThreadInfo->minDelay = UINT64_MAX;
-
-        if ((NULL == stbInfo) ||
-                (stbInfo->iface != REST_IFACE)) {
-            //t_info->taos = taos;
-            pThreadInfo->taos = taos_connect(
-                    g_Dbs.host, g_Dbs.user,
-                    g_Dbs.password, db_name, g_Dbs.port);
-            if (NULL == pThreadInfo->taos) {
-                free(infos);
-                errorPrint2(
-                        "%s() LN%d, connect to server fail from insert sub thread, reason: %s\n",
-                        __func__, __LINE__,
-                        taos_errstr(NULL));
-                exit(EXIT_FAILURE);
-            }
-
-            if ((g_args.iface == STMT_IFACE)
-                    || ((stbInfo)
-                        && (stbInfo->iface == STMT_IFACE))) {
-
-                pThreadInfo->stmt = taos_stmt_init(pThreadInfo->taos);
-                if (NULL == pThreadInfo->stmt) {
-                    free(pids);
-                    free(infos);
-                    errorPrint2(
-                            "%s() LN%d, failed init stmt, reason: %s\n",
-                            __func__, __LINE__,
-                            taos_errstr(NULL));
-                    exit(EXIT_FAILURE);
-                }
-
-                if (0 != taos_stmt_prepare(pThreadInfo->stmt, stmtBuffer, 0)) {
-                    free(pids);
-                    free(infos);
-                    free(stmtBuffer);
-                    errorPrint2("failed to execute taos_stmt_prepare. return 0x%x. reason: %s\n",
-                            ret, taos_stmt_errstr(pThreadInfo->stmt));
-                    exit(EXIT_FAILURE);
-                }
-                pThreadInfo->bind_ts = malloc(sizeof(int64_t));
-
-                if (stbInfo) {
-#if STMT_BIND_PARAM_BATCH == 1
-                    parseStbSampleToStmtBatchForThread(
-                            pThreadInfo, stbInfo, timePrec, batch);
-#else
-                    parseStbSampleToStmt(pThreadInfo, stbInfo, timePrec);
-#endif
-                } else {
-#if STMT_BIND_PARAM_BATCH == 1
-                    parseNtbSampleToStmtBatchForThread(
-                            pThreadInfo, timePrec, batch);
-#else
-                    parseNtbSampleToStmt(pThreadInfo, timePrec);
-#endif
-                }
-            }
-        } else {
-            pThreadInfo->taos = NULL;
-        }
-
-        /*    if ((NULL == stbInfo)
-              || (0 == stbInfo->multiThreadWriteOneTbl)) {
-              */
+        pThreadInfo->dbInfo = dbInfo;
         pThreadInfo->start_table_from = tableFrom;
         pThreadInfo->ntables = i<b?a+1:a;
         pThreadInfo->end_table_to = i < b ? tableFrom + a : tableFrom + a - 1;
         tableFrom = pThreadInfo->end_table_to + 1;
-        /*    } else {
-              pThreadInfo->start_table_from = 0;
-              pThreadInfo->ntables = stbInfo->childTblCount;
-              pThreadInfo->start_time = pThreadInfo->start_time + rand_int() % 10000 - rand_tinyint();
-              }
-              */
-        if (g_args.iface == REST_IFACE || ((stbInfo) && (stbInfo->iface == REST_IFACE))) {
-#ifdef WINDOWS
-            WSADATA wsaData;
-            WSAStartup(MAKEWORD(2, 2), &wsaData);
-            SOCKET sockfd;
-#else
-            int sockfd;
-#endif
-            sockfd = socket(AF_INET, SOCK_STREAM, 0);
-            if (sockfd < 0) {
-#ifdef WINDOWS
-                errorPrint( "Could not create socket : %d" , WSAGetLastError());
-#endif
-                debugPrint("%s() LN%d, sockfd=%d\n", __func__, __LINE__, sockfd);
-                ERROR_EXIT("opening socket");
-            }
 
-            int retConn = connect(sockfd, (struct sockaddr *)&(g_Dbs.serv_addr), sizeof(struct sockaddr));
-            debugPrint("%s() LN%d connect() return %d\n", __func__, __LINE__, retConn);
-            if (retConn < 0) {
-                ERROR_EXIT("connecting");
-            }
-            pThreadInfo->sockfd = sockfd;
+        pThreadInfo->minDelay = UINT64_MAX;
+        pThreadInfo->taos = taos_connect(
+                g_Dbs.host, g_Dbs.user,
+                g_Dbs.password, dbInfo->dbName, g_Dbs.port);
+        if (NULL == pThreadInfo->taos) {
+            free(infos);
+            errorPrint2(
+                    "%s() LN%d, connect to server fail from insert sub thread, reason: %s\n",
+                    __func__, __LINE__,
+                    taos_errstr(NULL));
+            return -1;
         }
+    
+#ifdef WINDOWS
+        WSADATA wsaData;
+        WSAStartup(MAKEWORD(2, 2), &wsaData);
+        SOCKET sockfd;
+#else
+        int sockfd;
+#endif
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sockfd < 0) {
+#ifdef WINDOWS
+            errorPrint( "Could not create socket : %d" , WSAGetLastError());
+#endif
+            debugPrint("%s() LN%d, sockfd=%d\n", __func__, __LINE__, sockfd);
+            ERROR_EXIT("opening socket");
+        }
+
+        int retConn = connect(sockfd, (struct sockaddr *)&(g_Dbs.serv_addr), sizeof(struct sockaddr));
+        debugPrint("%s() LN%d connect() return %d\n", __func__, __LINE__, retConn);
+        if (retConn < 0) {
+            ERROR_EXIT("connecting");
+        }
+        pThreadInfo->sockfd = sockfd;
 
         tsem_init(&(pThreadInfo->lock_sem), 0, 0);
-        if (ASYNC_MODE == g_Dbs.asyncMode) {
-            pthread_create(pids + i, NULL, asyncWrite, pThreadInfo);
-        } else {
-            pthread_create(pids + i, NULL, syncWrite, pThreadInfo);
-        }
+        pthread_create(pids + i, NULL, syncWriteProgressive, pThreadInfo);
     }
-
-    free(stmtBuffer);
 
     int64_t start = taosGetTimestampUs();
 
-    for (int i = 0; i < threads; i++) {
+    for (int i = 0; i < g_Dbs.threadCount; i++) {
         pthread_join(pids[i], NULL);
     }
 
@@ -11385,7 +11245,7 @@ static void startMultiThreadInsertData(int threads, char* db_name,
     uint64_t cntDelay = 1;
     double  avgDelay = 0;
 
-    for (int i = 0; i < threads; i++) {
+    for (int i = 0; i < g_Dbs.threadCount; i++) {
         threadInfo *pThreadInfo = infos + i;
 
         tsem_destroy(&(pThreadInfo->lock_sem));
@@ -11396,18 +11256,18 @@ static void startMultiThreadInsertData(int threads, char* db_name,
         }
 
         tmfree((char *)pThreadInfo->bind_ts);
+#ifdef WINDOWS
+        closesocket(pThreadInfo->sockfd);
+        WSACleanup();
+#else
+        close(pThreadInfo->sockfd);
+#endif
+
 #if STMT_BIND_PARAM_BATCH == 1
         tmfree((char *)pThreadInfo->bind_ts_array);
         tmfree(pThreadInfo->bindParams);
         tmfree(pThreadInfo->is_null);
-        if (g_args.iface == REST_IFACE || ((stbInfo) && (stbInfo->iface == REST_IFACE))) {
-#ifdef WINDOWS
-            closesocket(pThreadInfo->sockfd);
-            WSACleanup();
-#else
-            close(pThreadInfo->sockfd);
-#endif
-        }
+
 #else
         if (pThreadInfo->sampleBindArray) {
             for (int k = 0; k < MAX_SAMPLES; k++) {
@@ -11432,13 +11292,9 @@ static void startMultiThreadInsertData(int threads, char* db_name,
                 __func__, __LINE__,
                 pThreadInfo->threadID, pThreadInfo->totalInsertRows,
                 pThreadInfo->totalAffectedRows);
-        if (stbInfo) {
-            stbInfo->totalAffectedRows += pThreadInfo->totalAffectedRows;
-            stbInfo->totalInsertRows += pThreadInfo->totalInsertRows;
-        } else {
-            g_args.totalAffectedRows += pThreadInfo->totalAffectedRows;
-            g_args.totalInsertRows += pThreadInfo->totalInsertRows;
-        }
+
+        g_args.totalAffectedRows += pThreadInfo->totalAffectedRows;
+        g_args.totalInsertRows += pThreadInfo->totalInsertRows;
 
         totalDelay  += pThreadInfo->totalDelay;
         cntDelay   += pThreadInfo->cntDelay;
@@ -11455,35 +11311,18 @@ static void startMultiThreadInsertData(int threads, char* db_name,
 
     double tInMs = (double) t / 1000000.0;
 
-    if (stbInfo) {
-        fprintf(stderr, "Spent %.4f seconds to insert rows: %"PRIu64", affected rows: %"PRIu64" with %d thread(s) into %s.%s. %.2f records/second\n\n",
-                tInMs, stbInfo->totalInsertRows,
-                stbInfo->totalAffectedRows,
-                threads, db_name, stbInfo->stbName,
-                (double)(stbInfo->totalInsertRows/tInMs));
-
-        if (g_fpOfInsertResult) {
-            fprintf(g_fpOfInsertResult,
-                    "Spent %.4f seconds to insert rows: %"PRIu64", affected rows: %"PRIu64" with %d thread(s) into %s.%s. %.2f records/second\n\n",
-                    tInMs, stbInfo->totalInsertRows,
-                    stbInfo->totalAffectedRows,
-                    threads, db_name, stbInfo->stbName,
-                    (double)(stbInfo->totalInsertRows/tInMs));
-        }
-    } else {
-        fprintf(stderr, "Spent %.4f seconds to insert rows: %"PRIu64", affected rows: %"PRIu64" with %d thread(s) into %s %.2f records/second\n\n",
+    fprintf(stderr, "Spent %.4f seconds to insert rows: %"PRIu64", affected rows: %"PRIu64" with %d thread(s) into %s %.2f records/second\n\n",
+            tInMs, g_args.totalInsertRows,
+            g_args.totalAffectedRows,
+            g_Dbs.threadCount, dbInfo->dbName,
+            (double)(g_args.totalInsertRows/tInMs));
+    if (g_fpOfInsertResult) {
+        fprintf(g_fpOfInsertResult,
+                "Spent %.4f seconds to insert rows: %"PRIu64", affected rows: %"PRIu64" with %d thread(s) into %s %.2f records/second\n\n",
                 tInMs, g_args.totalInsertRows,
                 g_args.totalAffectedRows,
-                threads, db_name,
+                g_Dbs.threadCount, dbInfo->dbName,
                 (double)(g_args.totalInsertRows/tInMs));
-        if (g_fpOfInsertResult) {
-            fprintf(g_fpOfInsertResult,
-                    "Spent %.4f seconds to insert rows: %"PRIu64", affected rows: %"PRIu64" with %d thread(s) into %s %.2f records/second\n\n",
-                    tInMs, g_args.totalInsertRows,
-                    g_args.totalAffectedRows,
-                    threads, db_name,
-                    (double)(g_args.totalInsertRows/tInMs));
-        }
     }
 
     if (minDelay != UINT64_MAX) {
@@ -11499,8 +11338,6 @@ static void startMultiThreadInsertData(int threads, char* db_name,
                     (double)minDelay/1000.0);
         }
     }
-
-    //taos_close(taos);
 
     free(pids);
     free(infos);
@@ -11704,12 +11541,10 @@ static void prompt()
 
 static int insertTestProcess() {
     int32_t code = 0;
-    setupForAnsiEscape();
-    code = printfInsertMeta();
-    resetAfterAnsiEscape();
 
+    code = printfInsertMeta();
     if (code) {
-        errorPrint2("%s() LN%d, printfInsertMeta() failed\n", __func__, __LINE__);
+        errorPrint("%s() LN%d, printfInsertMeta() failed\n", __func__, __LINE__);
         goto end;
     }
         
@@ -11731,58 +11566,49 @@ static int insertTestProcess() {
 
     // create database and super tables
     code = createDatabasesAndStables();
-    if(code) {
-        errorPrint2("%s() LN%d, createDatabasesAndStables() failed\n", __func__, __LINE__);
+    if (code) {
+        errorPrint("%s() LN%d, createDatabasesAndStables() failed\n", __func__, __LINE__);
         goto end;
     }
 
     // pretreatment
     code = prepareSampleData();
     if (code) { 
-        errorPrint2("%s() LN%d, prepareSampleData() failed\n", __func__, __LINE__);
+        errorPrint("%s() LN%d, prepareSampleData() failed\n", __func__, __LINE__);
         goto end;
     }
 
     // create child tables
     code = createChildTables();
     if (code) {
-        errorPrint2("%s() LN%d, createChildTables() failed\n", __func__, __LINE__);
+        errorPrint("%s() LN%d, createChildTables() failed\n", __func__, __LINE__);
+        goto end;
+    }
+
+    code = convertHostToServAddr(g_Dbs.host, g_Dbs.port, &(g_Dbs.serv_addr));
+    if (code) {
+        errorPrint("%s() LN%d, convertHostToServAddr() failed\n", __func__, __LINE__);
         goto end;
     }
 
     // create sub threads for inserting data
-    //start = taosGetTimestampMs();
-    for (int i = 0; i < g_Dbs.dbCount; i++) {
-        if (g_Dbs.use_metric) {
-            if (g_Dbs.db[i].superTblCount > 0) {
-                for (uint64_t j = 0; j < g_Dbs.db[i].superTblCount; j++) {
-
-                    SSuperTable* stbInfo = &g_Dbs.db[i].superTbls[j];
-
-                    if (stbInfo && (stbInfo->insertRows > 0)) {
-                        startMultiThreadInsertData(
-                                g_Dbs.threadCount,
-                                g_Dbs.db[i].dbName,
-                                g_Dbs.db[i].dbCfg.precision,
-                                stbInfo);
-                    }
-                }
+    if (g_Dbs.use_metric) {
+        for (int i = 0; i < g_Dbs.dbCount; i++) {
+            code = startMultiThreadInsertData(&(g_Dbs.db[i]));
+            if (code) {
+                errorPrint("%s() LN%d, startMultiThreadInsertData() failed for database %d\n", __func__, __LINE__, i);
+                goto end;
             }
-        } else {
-            if (SML_IFACE == g_args.iface) {
-                errorPrint2("%s\n", "Schemaless insertion must include stable");
-                exit(EXIT_FAILURE);
-            } else {
-                startMultiThreadInsertData(
-                    g_Dbs.threadCount,
-                    g_Dbs.db[i].dbName,
-                    g_Dbs.db[i].dbCfg.precision,
-                    NULL);
-            }
+        }
+    } else {
+        code = startMultiThreadInsertDataWithoutStb();
+        if (code) {
+                errorPrint("%s() LN%d, startMultiThreadInsertDataWithoutStb() failed.\n", __func__, __LINE__);
+                goto end;
         }
     }
 end:
-    if (g_fpOfInsertResult){
+    if (g_fpOfInsertResult) {
         fclose(g_fpOfInsertResult);
     }
     return code;
