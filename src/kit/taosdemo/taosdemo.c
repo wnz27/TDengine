@@ -10236,7 +10236,7 @@ static void* syncWriteInterlace(threadInfo *pThreadInfo, uint32_t interlaceRows)
             pThreadInfo->threadID, __func__, __LINE__,
             pThreadInfo->start_table_from,
             pThreadInfo->ntables, insertRows);
-#if 1
+
     if (interlaceRows > g_args.reqPerReq)
         interlaceRows = g_args.reqPerReq;
 
@@ -10249,22 +10249,6 @@ static void* syncWriteInterlace(threadInfo *pThreadInfo, uint32_t interlaceRows)
     } else {
         batchPerTblTimes = 1;
     }
-#else
-    uint32_t batchPerTbl;
-    if (interlaceRows > g_args.reqPerReq)
-        batchPerTbl = g_args.reqPerReq;
-    else
-        batchPerTbl = interlaceRows;
-
-    uint32_t batchPerTblTimes;
-
-    if ((interlaceRows > 0) && (pThreadInfo->ntables > 1)) {
-        batchPerTblTimes =
-            interlaceRows / batchPerTbl;
-    } else {
-        batchPerTblTimes = 1;
-    }
-#endif
     pThreadInfo->buffer = calloc(maxSqlLen, 1);
     if (NULL == pThreadInfo->buffer) {
         errorPrint2( "%s() LN%d, Failed to alloc %"PRIu64" Bytes, reason:%s\n",
@@ -10469,259 +10453,6 @@ static void* syncWriteInterlace(threadInfo *pThreadInfo, uint32_t interlaceRows)
 free_of_interlace:
     tmfree(pThreadInfo->buffer);
     printStatPerThread(pThreadInfo);
-    return NULL;
-}
-
-static void* syncWriteProgressiveStmt(threadInfo *pThreadInfo) {
-    debugPrint("%s() LN%d: ### stmt progressive write\n", __func__, __LINE__);
-
-    SSuperTable* stbInfo = pThreadInfo->stbInfo;
-    int64_t timeStampStep =
-        stbInfo?stbInfo->timeStampStep:g_args.timestamp_step;
-    int64_t insertRows =
-        (stbInfo)?stbInfo->insertRows:g_args.insertRows;
-    verbosePrint("%s() LN%d insertRows=%"PRId64"\n",
-            __func__, __LINE__, insertRows);
-
-    uint64_t lastPrintTime = taosGetTimestampMs();
-    uint64_t startTs = taosGetTimestampMs();
-    uint64_t endTs;
-
-    pThreadInfo->totalInsertRows = 0;
-    pThreadInfo->totalAffectedRows = 0;
-
-    pThreadInfo->samplePos = 0;
-
-    int percentComplete = 0;
-    int64_t totalRows = insertRows * pThreadInfo->ntables;
-
-    for (uint64_t tableSeq = pThreadInfo->start_table_from;
-            tableSeq <= pThreadInfo->end_table_to;
-            tableSeq ++) {
-        int64_t start_time = pThreadInfo->start_time;
-
-        for (uint64_t i = 0; i < insertRows;) {
-            char tableName[TSDB_TABLE_NAME_LEN];
-            getTableName(tableName, pThreadInfo, tableSeq);
-            verbosePrint("%s() LN%d: tid=%d seq=%"PRId64" tableName=%s\n",
-                    __func__, __LINE__,
-                    pThreadInfo->threadID, tableSeq, tableName);
-            if (0 == strlen(tableName)) {
-                errorPrint2("[%d] %s() LN%d, getTableName return null\n",
-                        pThreadInfo->threadID, __func__, __LINE__);
-                return NULL;
-            }
-
-            // measure prepare + insert
-            startTs = taosGetTimestampUs();
-
-            int32_t generated;
-            if (stbInfo) {
-                generated = prepareStbStmt(
-                        pThreadInfo,
-                        tableName,
-                        tableSeq,
-                        (g_args.reqPerReq>stbInfo->insertRows)?
-                        stbInfo->insertRows:
-                        g_args.reqPerReq,
-                        insertRows, i, start_time,
-                        &(pThreadInfo->samplePos));
-            } else {
-                generated = prepareStmtWithoutStb(
-                        pThreadInfo,
-                        tableName,
-                        g_args.reqPerReq,
-                        insertRows, i,
-                        start_time);
-            }
-
-            verbosePrint("[%d] %s() LN%d generated=%d\n",
-                    pThreadInfo->threadID,
-                    __func__, __LINE__, generated);
-
-            if (generated > 0)
-                i += generated;
-            else
-                goto free_of_stmt_progressive;
-
-            start_time +=  generated * timeStampStep;
-            pThreadInfo->totalInsertRows += generated;
-
-            // only measure insert
-            // startTs = taosGetTimestampUs();
-
-            int32_t affectedRows = execInsert(pThreadInfo, generated);
-
-            endTs = taosGetTimestampUs();
-            uint64_t delay = endTs - startTs;
-            performancePrint("%s() LN%d, insert execution time is %10.f ms\n",
-                    __func__, __LINE__, delay/1000.0);
-            verbosePrint("[%d] %s() LN%d affectedRows=%d\n",
-                    pThreadInfo->threadID,
-                    __func__, __LINE__, affectedRows);
-
-            if (delay > pThreadInfo->maxDelay) pThreadInfo->maxDelay = delay;
-            if (delay < pThreadInfo->minDelay) pThreadInfo->minDelay = delay;
-            pThreadInfo->cntDelay++;
-            pThreadInfo->totalDelay += delay;
-
-            if (affectedRows < 0) {
-                errorPrint2("%s() LN%d, affected rows: %d\n",
-                        __func__, __LINE__, affectedRows);
-                goto free_of_stmt_progressive;
-            }
-
-            pThreadInfo->totalAffectedRows += affectedRows;
-
-            int currentPercent = pThreadInfo->totalAffectedRows * 100 / totalRows;
-            if (currentPercent > percentComplete ) {
-                printf("[%d]:%d%%\n", pThreadInfo->threadID, currentPercent);
-                percentComplete = currentPercent;
-            }
-            int64_t  currentPrintTime = taosGetTimestampMs();
-            if (currentPrintTime - lastPrintTime > 30*1000) {
-                printf("thread[%d] has currently inserted rows: %"PRId64 ", affected rows: %"PRId64 "\n",
-                        pThreadInfo->threadID,
-                        pThreadInfo->totalInsertRows,
-                        pThreadInfo->totalAffectedRows);
-                lastPrintTime = currentPrintTime;
-            }
-
-            if (i >= insertRows)
-                break;
-        }   // insertRows
-
-        if ((g_args.verbose_print) &&
-                (tableSeq == pThreadInfo->ntables - 1) && (stbInfo)
-                && (0 == strncasecmp(
-                        stbInfo->dataSource,
-                        "sample", strlen("sample")))) {
-            verbosePrint("%s() LN%d samplePos=%"PRId64"\n",
-                    __func__, __LINE__, pThreadInfo->samplePos);
-        }
-    } // tableSeq
-
-    if (percentComplete < 100) {
-        printf("[%d]:%d%%\n", pThreadInfo->threadID, percentComplete);
-    }
-
-free_of_stmt_progressive:
-    tmfree(pThreadInfo->buffer);
-    printStatPerThread(pThreadInfo);
-    return NULL;
-}
-
-static void* syncWriteProgressiveSml(threadInfo *pThreadInfo) {
-    debugPrint("%s() LN%d: ### sml progressive write\n", __func__, __LINE__);
-
-    SSuperTable* stbInfo = pThreadInfo->stbInfo;
-    int64_t timeStampStep = stbInfo->timeStampStep;
-    int64_t insertRows = stbInfo->insertRows;
-    verbosePrint("%s() LN%d insertRows=%"PRId64"\n",
-            __func__, __LINE__, insertRows);
-
-    uint64_t lastPrintTime = taosGetTimestampMs();
-
-    pThreadInfo->totalInsertRows = 0;
-    pThreadInfo->totalAffectedRows = 0;
-
-    pThreadInfo->samplePos = 0;
-
-    char *smlHeadList = calloc(pThreadInfo->ntables, sizeof(char *));
-    assert(smlHeadList);
-    for (int t = 0; t < pThreadInfo->ntables; t++) {
-        char* smlHead = *((char**)smlHeadList + t * sizeof(char *));
-        smlHead = (char *)calloc(HEAD_BUFF_LEN, 1);
-        if (NULL == smlHead) {
-            errorPrint2("calloc failed! size:%d\n", HEAD_BUFF_LEN);
-            exit(EXIT_FAILURE);
-        }
-        generateSmlHead(smlHead, stbInfo, pThreadInfo, t);
-
-    }
-    int currentPercent = 0;
-    int percentComplete = 0;
-
-    if (insertRows < g_args.reqPerReq) {
-        g_args.reqPerReq = insertRows;
-    }
-    pThreadInfo->lines = calloc(g_args.reqPerReq, sizeof(char *));
-    if (NULL == pThreadInfo->lines) {
-        errorPrint2("Failed to alloc %"PRIu64" bytes, reason:%s\n",
-                g_args.reqPerReq * (uint64_t)sizeof(char *),
-                strerror(errno));
-        return NULL;
-    }
-
-    for (uint64_t i = 0; i < pThreadInfo->ntables; i++) {
-        int64_t timestamp = pThreadInfo->start_time;
-
-        for (uint64_t j = 0; j < insertRows;) {
-            for (int k = 0; k < g_args.reqPerReq; k++) {
-                pThreadInfo->lines[k] = calloc(BUFFER_SIZE, 1);
-                if (NULL == pThreadInfo->lines[k]) {
-                    errorPrint2("Failed to alloc %d bytes, reason:%s\n",
-                        BUFFER_SIZE, strerror(errno));
-                }
-                generateSmlTail(pThreadInfo->lines[k], *((char**)smlHeadList + i * sizeof(char *)), stbInfo, pThreadInfo, timestamp);
-                timestamp += timeStampStep;
-                j++;
-                if (j == insertRows) {
-                    break;
-                }
-            }
-            uint64_t startTs = taosGetTimestampUs();
-            int32_t affectedRows = execInsert(pThreadInfo, g_args.reqPerReq);
-            uint64_t endTs = taosGetTimestampUs();
-            uint64_t delay = endTs - startTs;
-
-            performancePrint("%s() LN%d, insert execution time is %10.f ms\n",
-                    __func__, __LINE__, delay/1000.0);
-            verbosePrint("[%d] %s() LN%d affectedRows=%d\n",
-                    pThreadInfo->threadID,
-                    __func__, __LINE__, affectedRows);
-
-            if (delay > pThreadInfo->maxDelay){
-                pThreadInfo->maxDelay = delay;
-            }
-            if (delay < pThreadInfo->minDelay){
-                pThreadInfo->minDelay = delay;
-            }
-            pThreadInfo->cntDelay++;
-            pThreadInfo->totalDelay += delay;
-
-            pThreadInfo->totalAffectedRows += affectedRows;
-            pThreadInfo->totalInsertRows += g_args.reqPerReq;
-            currentPercent =
-                    pThreadInfo->totalAffectedRows * g_Dbs.threadCount / insertRows;
-            if (currentPercent > percentComplete) {
-                    printf("[%d]:%d%%\n", pThreadInfo->threadID,
-                           currentPercent);
-                    percentComplete = currentPercent;
-            }
-
-            int64_t  currentPrintTime = taosGetTimestampMs();
-            if (currentPrintTime - lastPrintTime > 30*1000) {
-                printf("thread[%d] has currently inserted rows: %"PRId64 ", affected rows: %"PRId64 "\n",
-                        pThreadInfo->threadID,
-                        pThreadInfo->totalInsertRows,
-                        pThreadInfo->totalAffectedRows);
-                lastPrintTime = currentPrintTime;
-            }
-
-            for (int index = 0; index < g_args.reqPerReq; index++) {
-                    free(pThreadInfo->lines[index]);
-            }
-            if (j == insertRows) {
-                break;
-            }
-        }
-    }
-    tmfree(pThreadInfo->lines);
-    for (int index = 0; index < pThreadInfo->ntables; index++) {
-        free(*((char**)smlHeadList + index * sizeof(char *)));
-    }
-    tmfree(smlHeadList);
     return NULL;
 }
 
@@ -11079,67 +10810,194 @@ static int startMultiThreadInsertData(SDataBase* dbInfo) {
     
     for (int i = 0; i < dbInfo->superTblCount; i++) {
         if (dbInfo->superTbls[i].interlaceRows > 0) {
-            code = interlaceInsertData(dbInfo->superTbls[i]);
+            code = interlaceInsertData(&(dbInfo->superTbls[i]), dbInfo);
             if (code) {
                 errorPrint2("%s() LN%d, interlaceInsertData() failed for stable: %d\n", __func__, __LINE__, i);
                 return code;
             }
         }
     }
-<<<<<<< Updated upstream
-    debugPrint("%s() LN%d, startTime= %"PRId64"\n",
-            __func__, __LINE__, startTime);
-
-    // read sample data from file first
-    int ret;
-    if (stbInfo && stbInfo->iface != SML_IFACE) {
-        ret = prepareSampleForStb(stbInfo);
-    } else {
-        ret = prepareSampleForNtb();
-    }
-
-    if (0 != ret) {
-        errorPrint2("%s() LN%d, prepare sample data for stable failed!\n",
-                __func__, __LINE__);
-        exit(EXIT_FAILURE);
-    }
-
-    TAOS* taos0 = taos_connect(
-            g_Dbs.host, g_Dbs.user,
-            g_Dbs.password, db_name, g_Dbs.port);
-    if (NULL == taos0) {
-        errorPrint2("%s() LN%d, connect to server fail , reason: %s\n",
-                __func__, __LINE__, taos_errstr(NULL));
-        exit(EXIT_FAILURE);
-    }
-
-    int64_t ntables = 0;
-    uint64_t tableFrom = 0;
-
-    if (stbInfo) {
-        if (stbInfo->iface != SML_IFACE) {
-            int64_t limit;
-            uint64_t offset;
-
-            if ((NULL != g_args.sqlFile)
-                    && (stbInfo->childTblExists == TBL_NO_EXISTS)
-                    && ((stbInfo->childTblOffset != 0)
-                        || (stbInfo->childTblLimit >= 0))) {
-                printf("WARNING: offset and limit will not be used since the child tables not exists!\n");
-            }
-
-            if (stbInfo->childTblExists == TBL_ALREADY_EXISTS) {
-                if ((stbInfo->childTblLimit < 0)
-                        || ((stbInfo->childTblOffset
-                                + stbInfo->childTblLimit)
-                            > (stbInfo->childTblCount))) {
-
-                    if (stbInfo->childTblCount < stbInfo->childTblOffset) {
-                        printf("WARNING: offset will not be used since the child tables count is less then offset!\n");
-=======
     return code;
 }
->>>>>>> Stashed changes
+
+static int interlaceInsertData(SSuperTable* stbInfo, SDataBase* dbInfo) {
+    int32_t code = 0;
+    uint64_t tableFrom = 0;
+    int64_t a = stbInfo->childTblCount / g_Dbs.threadCount;
+    if (a < 1) {
+        g_Dbs.threadCount = stbInfo->childTblCount;
+        a = 1;
+    }
+
+    int64_t b = 0;
+    if (g_Dbs.threadCount != 0) {
+        b = stbInfo->childTblCount % g_Dbs.threadCount;
+    }
+
+    pthread_t *pids = calloc(1, g_Dbs.threadCount * sizeof(pthread_t));
+    threadInfo *infos = calloc(1, g_Dbs.threadCount * sizeof(threadInfo));
+    assert(pids != NULL);
+    assert(infos != NULL);
+
+    for (int i = 0; i < g_Dbs.threadCount; i++) {
+        threadInfo *pThreadInfo = infos + i;
+        pThreadInfo->threadID = i;
+        pThreadInfo->stbInfo = stbInfo;
+        pThreadInfo->start_table_from = tableFrom;
+        pThreadInfo->ntables = i<b?a+1:a;
+        pThreadInfo->end_table_to = i < b ? tableFrom + a : tableFrom + a - 1;
+        tableFrom = pThreadInfo->end_table_to + 1;
+
+        pThreadInfo->minDelay = UINT64_MAX;
+        if (stbInfo->iface != REST_IFACE) {
+            pThreadInfo->taos = taos_connect(
+                g_Dbs.host, g_Dbs.user,
+                g_Dbs.password, dbInfo->dbName, g_Dbs.port);
+            if (NULL == pThreadInfo->taos) {
+                free(infos);
+                errorPrint2(
+                        "%s() LN%d, connect to server fail from insert sub thread, reason: %s\n",
+                        __func__, __LINE__,
+                        taos_errstr(NULL));
+                return -1;
+            }
+        } else {
+#ifdef WINDOWS
+            WSADATA wsaData;
+            WSAStartup(MAKEWORD(2, 2), &wsaData);
+            SOCKET sockfd;
+#else
+            int sockfd;
+#endif
+            sockfd = socket(AF_INET, SOCK_STREAM, 0);
+            if (sockfd < 0) {
+#ifdef WINDOWS
+                errorPrint( "Could not create socket : %d" , WSAGetLastError());
+#endif
+                debugPrint("%s() LN%d, sockfd=%d\n", __func__, __LINE__, sockfd);
+                ERROR_EXIT("opening socket");
+            }
+
+            int retConn = connect(sockfd, (struct sockaddr *)&(g_Dbs.serv_addr), sizeof(struct sockaddr));
+            debugPrint("%s() LN%d connect() return %d\n", __func__, __LINE__, retConn);
+            if (retConn < 0) {
+                ERROR_EXIT("connecting");
+            }
+            pThreadInfo->sockfd = sockfd;
+        }
+        tsem_init(&(pThreadInfo->lock_sem), 0, 0);
+        pthread_create(pids + i, NULL, syncWriteInterlace, pThreadInfo);
+    }
+
+    int64_t start = taosGetTimestampUs();
+
+    for (int i = 0; i < g_Dbs.threadCount; i++) {
+        pthread_join(pids[i], NULL);
+    }
+
+    uint64_t totalDelay = 0;
+    uint64_t maxDelay = 0;
+    uint64_t minDelay = UINT64_MAX;
+    uint64_t cntDelay = 1;
+    double  avgDelay = 0;
+
+    for (int i = 0; i < g_Dbs.threadCount; i++) {
+        threadInfo *pThreadInfo = infos + i;
+
+        tsem_destroy(&(pThreadInfo->lock_sem));
+        taos_close(pThreadInfo->taos);
+
+        if (pThreadInfo->stmt) {
+            taos_stmt_close(pThreadInfo->stmt);
+        }
+
+        tmfree((char *)pThreadInfo->bind_ts);
+#ifdef WINDOWS
+        closesocket(pThreadInfo->sockfd);
+        WSACleanup();
+#else
+        close(pThreadInfo->sockfd);
+#endif
+
+#if STMT_BIND_PARAM_BATCH == 1
+        tmfree((char *)pThreadInfo->bind_ts_array);
+        tmfree(pThreadInfo->bindParams);
+        tmfree(pThreadInfo->is_null);
+
+#else
+        if (pThreadInfo->sampleBindArray) {
+            for (int k = 0; k < MAX_SAMPLES; k++) {
+                uintptr_t *tmp = (uintptr_t *)(*(uintptr_t *)(
+                            pThreadInfo->sampleBindArray
+                            + sizeof(uintptr_t *) * k));
+                int columnCount = (pThreadInfo->stbInfo)?
+                    pThreadInfo->stbInfo->columnCount:
+                    g_args.columnCount;
+                for (int c = 1; c < columnCount + 1; c++) {
+                    TAOS_BIND *bind = (TAOS_BIND *)((char *)tmp + (sizeof(TAOS_BIND) * c));
+                    if (bind)
+                        tmfree(bind->buffer);
+                }
+                tmfree((char *)tmp);
+            }
+            tmfree(pThreadInfo->sampleBindArray);
+        }
+#endif
+
+        debugPrint("%s() LN%d, [%d] totalInsert=%"PRIu64" totalAffected=%"PRIu64"\n",
+                __func__, __LINE__,
+                pThreadInfo->threadID, pThreadInfo->totalInsertRows,
+                pThreadInfo->totalAffectedRows);
+
+        g_args.totalAffectedRows += pThreadInfo->totalAffectedRows;
+        g_args.totalInsertRows += pThreadInfo->totalInsertRows;
+
+        totalDelay  += pThreadInfo->totalDelay;
+        cntDelay   += pThreadInfo->cntDelay;
+        if (pThreadInfo->maxDelay > maxDelay) maxDelay = pThreadInfo->maxDelay;
+        if (pThreadInfo->minDelay < minDelay) minDelay = pThreadInfo->minDelay;
+    }
+
+    if (cntDelay == 0)    cntDelay = 1;
+    avgDelay = (double)totalDelay / cntDelay;
+
+    int64_t end = taosGetTimestampUs();
+    int64_t t = end - start;
+    if (0 == t) t = 1;
+
+    double tInMs = (double) t / 1000000.0;
+
+    fprintf(stderr, "Spent %.4f seconds to insert rows: %"PRIu64", affected rows: %"PRIu64" with %d thread(s) into %s %.2f records/second\n\n",
+            tInMs, g_args.totalInsertRows,
+            g_args.totalAffectedRows,
+            g_Dbs.threadCount, dbInfo->dbName,
+            (double)(g_args.totalInsertRows/tInMs));
+    if (g_fpOfInsertResult) {
+        fprintf(g_fpOfInsertResult,
+                "Spent %.4f seconds to insert rows: %"PRIu64", affected rows: %"PRIu64" with %d thread(s) into %s %.2f records/second\n\n",
+                tInMs, g_args.totalInsertRows,
+                g_args.totalAffectedRows,
+                g_Dbs.threadCount, dbInfo->dbName,
+                (double)(g_args.totalInsertRows/tInMs));
+    }
+
+    if (minDelay != UINT64_MAX) {
+        fprintf(stderr, "insert delay, avg: %10.2fms, max: %10.2fms, min: %10.2fms\n\n",
+                (double)avgDelay/1000.0,
+                (double)maxDelay/1000.0,
+                (double)minDelay/1000.0);
+
+        if (g_fpOfInsertResult) {
+            fprintf(g_fpOfInsertResult, "insert delay, avg:%10.2fms, max: %10.2fms, min: %10.2fms\n\n",
+                    (double)avgDelay/1000.0,
+                    (double)maxDelay/1000.0,
+                    (double)minDelay/1000.0);
+        }
+    }
+
+    free(pids);
+    free(infos);
+}
 
 static int progressiveInsertData(SDataBase* dbInfo) {
     int32_t code = 0;
@@ -12538,7 +12396,7 @@ static void setParaFromArg() {
 
     tstrncpy(g_Dbs.db[0].dbName, g_args.database, TSDB_DB_NAME_LEN);
     g_Dbs.db[0].dbCfg.replica = g_args.replica;
-    tstrncpy(g_Dbs.db[0].dbCfg.precision, "ms", SMALL_BUFF_LEN);
+    g_Dbs.db[0].dbCfg.precision = TSDB_TIME_PRECISION_MILLI;
 
     tstrncpy(g_Dbs.resultFile, g_args.output_file, MAX_FILE_NAME_LEN);
 
@@ -12820,7 +12678,7 @@ int main(int argc, char *argv[]) {
     int32_t code = 0;
     code = parse_args(argc, argv, &g_args);
     if(code){
-        errorPrint2("%s() LN%d, parse_args failed.\n", __func__, __LINE__);
+        errorPrint("%s() LN%d, parse_args failed.\n", __func__, __LINE__);
         exit(EXIT_FAILURE);
     }
 
@@ -12830,10 +12688,14 @@ int main(int argc, char *argv[]) {
         g_totalChildTables = 0;
         code = getInfoFromJsonFile(g_args.metaFile);
         if (code) {
-            errorPrint2("%s() LN%d, getInfoFromJsonFile(%s) failed.\n", __func__, __LINE__, g_args.metaFile);
+            errorPrint("%s() LN%d, getInfoFromJsonFile(%s) failed.\n", __func__, __LINE__, g_args.metaFile);
             exit(EXIT_FAILURE);
         }
-        testMetaFile();
+        code = testMetaFile();
+        if (code) {
+            errorPrint("%s() LN%d, testMetaFile() failed.\n", __func__, __LINE__);
+            exit(EXIT_FAILURE);
+        }
     } else {
         memset(&g_Dbs, 0, sizeof(SDbs));
         g_Dbs.db = calloc(1, sizeof(SDataBase));
